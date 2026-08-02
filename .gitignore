@@ -1,0 +1,39 @@
+# Operating systems
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.local
+.secrets/
+auth.json
+credentials.json
+*.pem
+*.key
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+.cache/
+tmp/
+
+# Common CLI build and test outputs
+coverage/
+dist/
+target/
+node_modules/
+
+# Local agent state
+.claude/
+.cursor/
+.grok/
