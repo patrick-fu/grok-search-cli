@@ -1,0 +1,61 @@
+[
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "web_search_call",
+      "status": "completed",
+      "action": {
+        "sources": [
+          {"type": "url", "url": "https://uncited.example.test/result"},
+          {"type": "url", "url": "https://docs.example.test/web"}
+        ]
+      }
+    }
+  },
+  {
+    "type": "response.output_text.annotation.added",
+    "annotation": {
+      "type": "url_citation",
+      "url": "https://docs.example.test/web",
+      "title": "1",
+      "start_index": 20,
+      "end_index": 49
+    }
+  },
+  {
+    "type": "response.output_text.annotation.added",
+    "annotation": {
+      "type": "url_citation",
+      "url": "https://docs.example.test/web",
+      "title": "1",
+      "start_index": 20,
+      "end_index": 49
+    }
+  },
+  {
+    "type": "response.completed",
+    "response": {
+      "model": "grok-4.5-build",
+      "output": [
+        {
+          "type": "message",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "The Web Search documentation is available at the cited URL.",
+              "annotations": [
+                {
+                  "type": "url_citation",
+                  "url": "https://docs.example.test/web",
+                  "title": "1",
+                  "start_index": 20,
+                  "end_index": 49
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

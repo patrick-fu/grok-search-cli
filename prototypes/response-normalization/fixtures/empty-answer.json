@@ -1,0 +1,15 @@
+[
+  {
+    "type": "response.output_item.done",
+    "item": {"type": "custom_tool_call", "name": "x_keyword_search", "status": "completed"}
+  },
+  {
+    "type": "response.completed",
+    "response": {
+      "model": "grok-4.5",
+      "output": [
+        {"type": "message", "content": [{"type": "output_text", "text": "   "}]}
+      ]
+    }
+  }
+]

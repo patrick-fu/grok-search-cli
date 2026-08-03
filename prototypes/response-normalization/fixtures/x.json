@@ -1,0 +1,52 @@
+[
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "type": "custom_tool_call",
+      "name": "x_keyword_search",
+      "status": "completed",
+      "input": "redacted"
+    }
+  },
+  {
+    "type": "response.output_text.annotation.added",
+    "annotation": {
+      "type": "url_citation",
+      "url": "https://x.com/i/status/111",
+      "title": "https://x.com/i/status/111",
+      "start_index": 0,
+      "end_index": 0
+    }
+  },
+  {
+    "type": "response.output_text.annotation.added",
+    "annotation": {
+      "type": "url_citation",
+      "url": "https://x.com/i/status/222",
+      "title": "https://x.com/i/status/222",
+      "start_index": 0,
+      "end_index": 0
+    }
+  },
+  {
+    "type": "response.completed",
+    "response": {
+      "model": "grok-4.5-build",
+      "output": [
+        {
+          "type": "message",
+          "content": [
+            {
+              "type": "output_text",
+              "text": "Two matching public posts were found.",
+              "annotations": [
+                {"type": "url_citation", "url": "https://x.com/i/status/111", "title": "https://x.com/i/status/111", "start_index": 0, "end_index": 0},
+                {"type": "url_citation", "url": "https://x.com/i/status/222", "title": "https://x.com/i/status/222", "start_index": 0, "end_index": 0}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

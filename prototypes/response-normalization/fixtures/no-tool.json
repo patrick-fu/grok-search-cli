@@ -1,0 +1,15 @@
+[
+  {
+    "type": "response.output_text.annotation.added",
+    "annotation": {"type": "url_citation", "url": "https://answer.example.test/source", "title": "Answer source"}
+  },
+  {
+    "type": "response.completed",
+    "response": {
+      "model": "grok-4.5",
+      "output": [
+        {"type": "message", "content": [{"type": "output_text", "text": "This answer has a link but no search event."}]}
+      ]
+    }
+  }
+]

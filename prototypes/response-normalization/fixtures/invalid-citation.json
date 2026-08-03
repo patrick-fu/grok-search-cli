@@ -1,0 +1,22 @@
+[
+  {
+    "type": "response.web_search_call.completed"
+  },
+  {
+    "type": "response.output_text.annotation.added",
+    "annotation": {"type": "url_citation", "url": "javascript:alert(1)", "title": "Unsafe"}
+  },
+  {
+    "type": "response.output_text.annotation.added",
+    "annotation": {"type": "url_citation", "url": "https://safe.example.test/source", "title": "Safe source"}
+  },
+  {
+    "type": "response.completed",
+    "response": {
+      "model": "grok-4.5",
+      "output": [
+        {"type": "message", "content": [{"type": "output_text", "text": "One valid citation remains."}]}
+      ]
+    }
+  }
+]

@@ -1,0 +1,15 @@
+[
+  {
+    "type": "response.output_item.done",
+    "item": {"type": "web_search_call", "status": "completed"}
+  },
+  {
+    "type": "response.completed",
+    "response": {
+      "model": "grok-4.5",
+      "output": [
+        {"type": "message", "content": [{"type": "output_text", "text": "Search completed without structured citations."}]}
+      ]
+    }
+  }
+]

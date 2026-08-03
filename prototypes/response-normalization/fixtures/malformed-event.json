@@ -1,0 +1,9 @@
+[
+  {
+    "type": 42
+  },
+  {
+    "type": "response.completed",
+    "response": {"model": "grok-4.5", "output": []}
+  }
+]
