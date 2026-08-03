@@ -8,7 +8,11 @@ Agent-friendly CLI for Grok-powered web and X search.
 
 ## Status
 
-Repository bootstrap and product design. No executable has been implemented yet.
+V1 product and technical design is complete; no executable has been implemented
+yet. See the [V1 specification](docs/spec/v1.md).
+
+V1 is approved only for private, repository-owner use at the owner's risk. xAI
+has not authorized this integration, and public distribution remains blocked.
 
 ## Initial scope
 
@@ -36,8 +40,9 @@ grok login
 ```
 
 The search CLI will treat Grok Build's credential file as read-only. Missing,
-expired, revoked, or unreadable credentials will produce typed errors with an
-actionable `grok login` or `grok login --device-code` remediation.
+unreadable, locally expired, or provider-rejected authentication will produce
+evidence-bounded typed errors. Applicable errors direct the user to `grok login`;
+the search CLI never starts that flow itself.
 
 ## Security
 
