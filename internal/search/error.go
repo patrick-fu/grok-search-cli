@@ -26,6 +26,24 @@ func NewError(code ErrorCode) *Error {
 	}
 }
 
+// ExitCode maps stable error codes to the command contract's process status.
+func (errorValue *Error) ExitCode() int {
+	if errorValue == nil {
+		return 0
+	}
+
+	switch errorValue.Code {
+	case ErrorUsage:
+		return 2
+	case ErrorAuthMissing, ErrorAuthUnreadable, ErrorAuthInsecure, ErrorAuthInvalid, ErrorAuthExpired:
+		return 3
+	case ErrorInternal:
+		return 70
+	default:
+		return 4
+	}
+}
+
 func errorMessage(code ErrorCode) string {
 	switch code {
 	case ErrorUsage:

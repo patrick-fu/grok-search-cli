@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/patrick-fu/grok-search-cli/internal/auth"
+	"github.com/patrick-fu/grok-search-cli/internal/grok"
 	"github.com/patrick-fu/grok-search-cli/internal/search"
 )
 
@@ -21,6 +23,7 @@ type Runtime struct {
 	StdinIsTerminal bool
 	Now             func() time.Time
 	LoadCredential  func(path string, now time.Time) (auth.Credential, *search.Error)
+	Search          func(ctx context.Context, request search.Request, credential auth.Credential) (search.Response, *search.Error)
 }
 
 func DefaultRuntime() Runtime {
@@ -55,7 +58,8 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 	if wantsHelp {
 		return writeHuman(stdout, helpText)
 	}
-	if _, ok := readQuery(positional, stdin, runtime.StdinIsTerminal); !ok {
+	query, ok := readQuery(positional, stdin, runtime.StdinIsTerminal)
+	if !ok {
 		return writeSearchError(stdout, search.NewError(search.ErrorUsage), 2)
 	}
 
@@ -69,12 +73,32 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 	if runtime.Now == nil || runtime.LoadCredential == nil {
 		return writeSearchError(stdout, search.NewError(search.ErrorInternal), 70)
 	}
-	if _, loadErr := runtime.LoadCredential(authPath, runtime.Now()); loadErr != nil {
+	credential, loadErr := runtime.LoadCredential(authPath, runtime.Now())
+	if loadErr != nil {
 		return writeSearchError(stdout, loadErr, 3)
 	}
 
-	// Ticket #12 replaces this fail-closed boundary with the first search call.
-	return writeSearchError(stdout, search.NewError(search.ErrorInternal), 70)
+	if args[0] != string(search.TypeWeb) {
+		return writeSearchError(stdout, search.NewError(search.ErrorInternal), 70)
+	}
+	if runtime.Search == nil {
+		version := runtime.Version
+		runtime.Search = func(ctx context.Context, request search.Request, credential auth.Credential) (search.Response, *search.Error) {
+			return grok.NewClient(credential.AccessToken, version, nil).Search(ctx, request)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	response, searchErr := runtime.Search(ctx, search.Request{
+		Type:  search.TypeWeb,
+		Query: query,
+		Model: "grok-4.5",
+	}, credential)
+	if searchErr != nil {
+		return writeSearchError(stdout, searchErr, searchErr.ExitCode())
+	}
+	return writeSearchResponse(stdout, response)
 }
 
 func parseSearchArgs(args []string) (authPath string, positional []string, wantsHelp bool, ok bool) {
@@ -182,6 +206,15 @@ func writeSearchError(stdout io.Writer, searchErr *search.Error, exitCode int) i
 		return 70
 	}
 	return exitCode
+}
+
+func writeSearchResponse(stdout io.Writer, response search.Response) int {
+	encoder := json.NewEncoder(stdout)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(response); err != nil {
+		return 70
+	}
+	return 0
 }
 
 func writeHuman(stdout io.Writer, value string) int {

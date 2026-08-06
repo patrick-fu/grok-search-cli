@@ -162,6 +162,19 @@ func TestSearch_DefaultModel(t *testing.T) {
 	}
 }
 
+func TestSearch_AcceptsAnySuccessfulSSEStatus(t *testing.T) {
+	rt := &fakeRoundTripper{
+		status: http.StatusCreated,
+		header: http.Header{"Content-Type": {"text/event-stream"}},
+		text:   validSSE("ok"),
+	}
+	c := NewClient("tok", "1.0", rt)
+	response, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
+	if err != nil || response.Answer != "ok" {
+		t.Fatalf("Search() response=%#v error=%v", response, err)
+	}
+}
+
 func TestSearch_Non200ReturnsInternalError(t *testing.T) {
 	rt := &fakeRoundTripper{status: 500}
 	c := NewClient("tok", "1.0", rt)

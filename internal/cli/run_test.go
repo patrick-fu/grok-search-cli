@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -146,6 +147,69 @@ func TestAuthFailuresUseStableJSONAndExitThree(t *testing.T) {
 			want := fmt.Sprintf("{\"schema_version\":1,\"error\":{\"code\":%q,\"message\":%q,\"retryable\":false}}\n", test.code, test.message)
 			if exitCode != 3 || stdout != want || stderr != "" {
 				t.Fatalf("exit=%d stdout=%q stderr=%q, want stdout %q", exitCode, stdout, stderr, want)
+			}
+		})
+	}
+}
+
+func TestWebSearchRendersOneNormalizedResponseAndPreservesQuery(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		args     []string
+		stdin    string
+		terminal bool
+		query    string
+	}{
+		{name: "piped CRLF", args: []string{"web"}, stdin: "find docs\r\n", query: "find docs"},
+		{name: "terminal positional", args: []string{"web", "find docs"}, terminal: true, query: "find docs"},
+		{name: "empty stdin falls back to positional", args: []string{"web", "find docs"}, query: "find docs"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			credential := auth.Credential{AccessToken: "TEST_ONLY_ACCESS_SENTINEL_DO_NOT_USE"}
+			runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+				return credential, nil
+			})
+			runtime.StdinIsTerminal = test.terminal
+			called := false
+			runtime.Search = func(ctx context.Context, request search.Request, gotCredential auth.Credential) (search.Response, *search.Error) {
+				called = true
+				if ctx.Err() != nil {
+					t.Fatal("search context is already cancelled")
+				}
+				if gotCredential != credential {
+					t.Fatalf("credential = %#v", gotCredential)
+				}
+				if request != (search.Request{Type: search.TypeWeb, Query: test.query, Model: "grok-4.5"}) {
+					t.Fatalf("request = %#v", request)
+				}
+				return search.Response{
+					SchemaVersion: search.SchemaVersion,
+					Type:          search.TypeWeb,
+					Query:         request.Query,
+					Model:         request.Model,
+					ProviderModel: "grok-4.5-build",
+					Answer:        "The docs are available.",
+					Sources:       []search.Source{{URL: "https://docs.example.test/"}},
+					Warnings:      []search.Warning{},
+				}, nil
+			}
+
+			exitCode, stdout, stderr := run(runtime, test.args, test.stdin)
+			want := fmt.Sprintf("{\"schema_version\":1,\"type\":\"web\",\"query\":%q,\"model\":\"grok-4.5\",\"provider_model\":\"grok-4.5-build\",\"answer\":\"The docs are available.\",\"sources\":[{\"url\":\"https://docs.example.test/\"}],\"warnings\":[]}\n", test.query)
+			if exitCode != 0 || stdout != want || stderr != "" {
+				t.Fatalf("exit=%d stdout=%q stderr=%q, want stdout %q", exitCode, stdout, stderr, want)
+			}
+			if !called {
+				t.Fatal("search was not called")
+			}
+			for _, forbidden := range []string{credential.AccessToken, "Authorization", "raw SSE"} {
+				if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
+					t.Fatalf("output leaked %q", forbidden)
+				}
 			}
 		})
 	}
@@ -366,6 +430,52 @@ func TestValidLegacyAndCurrentCredentialsFailClosedWithoutLeakingOrChangingStore
 			exitCode, stdout, stderr := run(runtime, []string{"x", "--auth-file", path, "query"}, "")
 
 			if exitCode != 70 || stdout != internalJSON || stderr != "" {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
+			}
+			for _, forbidden := range []string{"TEST_ONLY_ACCESS_SENTINEL_DO_NOT_USE", "TEST_ONLY_REFRESH_SENTINEL_DO_NOT_USE", "Authorization", path} {
+				if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
+					t.Fatalf("output leaked %q", forbidden)
+				}
+			}
+			after := snapshot(t, path)
+			if before != after {
+				t.Fatalf("credential store changed:\nbefore=%+v\nafter=%+v", before, after)
+			}
+		})
+	}
+}
+
+func TestSecureCredentialStoreSupportsOfflineWebSearchWithoutLeakingOrChangingStore(t *testing.T) {
+	for _, mode := range []string{"oidc", "oauth"} {
+		t.Run(mode, func(t *testing.T) {
+			directory := t.TempDir()
+			expires := ""
+			if mode == "oidc" {
+				expires = fixedNow.Add(time.Hour).Format(time.RFC3339)
+			}
+			path := writeStore(t, directory, "auth.json", validStore(t, mode, fixedNow.Add(-time.Hour), expires), 0o600)
+			before := snapshot(t, path)
+
+			runtime := cli.DefaultRuntime()
+			runtime.Now = func() time.Time { return fixedNow }
+			runtime.StdinIsTerminal = true
+			runtime.Search = func(_ context.Context, request search.Request, credential auth.Credential) (search.Response, *search.Error) {
+				if credential.AccessToken != "TEST_ONLY_ACCESS_SENTINEL_DO_NOT_USE" {
+					t.Fatalf("unexpected credential")
+				}
+				return search.Response{
+					SchemaVersion: search.SchemaVersion,
+					Type:          request.Type,
+					Query:         request.Query,
+					Model:         request.Model,
+					Answer:        "Offline response.",
+					Sources:       []search.Source{},
+					Warnings:      []search.Warning{search.WarningMissingCitations},
+				}, nil
+			}
+
+			exitCode, stdout, stderr := run(runtime, []string{"web", "--auth-file", path, "query"}, "")
+			if exitCode != 0 || stderr != "" {
 				t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 			}
 			for _, forbidden := range []string{"TEST_ONLY_ACCESS_SENTINEL_DO_NOT_USE", "TEST_ONLY_REFRESH_SENTINEL_DO_NOT_USE", "Authorization", path} {
