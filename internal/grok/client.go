@@ -9,9 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/patrick-fu/grok-search-cli/internal/normalize"
 	"github.com/patrick-fu/grok-search-cli/internal/search"
@@ -21,6 +23,8 @@ const (
 	endpointURL  = "https://cli-chat-proxy.grok.com/v1/responses"
 	defaultModel = "grok-4.5"
 	toolVersion  = "0.2.117"
+	retryDelay   = 250 * time.Millisecond
+	connectLimit = 10 * time.Second
 )
 
 // Client is the transport boundary for Grok search requests.
@@ -32,6 +36,7 @@ type client struct {
 	accessToken string
 	cliVersion  string
 	httpClient  *http.Client
+	waitRetry   func(context.Context, time.Duration) bool
 }
 
 // NewClient creates a Client with the given credentials. When rt is non-nil
@@ -48,17 +53,13 @@ func NewClient(accessToken, cliVersion string, rt http.RoundTripper) Client {
 	if rt != nil {
 		transport = rt
 	} else {
-		transport = &http.Transport{
-			Proxy: nil,
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-			},
-		}
+		transport = newProductionTransport()
 	}
 	c.httpClient = &http.Client{
 		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+	c.waitRetry = waitForRetry
 	return c
 }
 
@@ -72,21 +73,9 @@ func (c *client) Search(ctx context.Context, request search.Request) (search.Res
 		return search.Response{}, search.NewError(search.ErrorInternal)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(body))
-	if err != nil {
-		return search.Response{}, search.NewError(search.ErrorInternal)
-	}
-	c.setHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return search.Response{}, search.NewError(search.ErrorRequestTimeout)
-		}
-		return search.Response{}, search.NewError(search.ErrorTransport)
-	}
-	if resp == nil {
-		return search.Response{}, search.NewError(search.ErrorTransport)
+	resp, transportErr := c.doRequest(ctx, body)
+	if transportErr != nil {
+		return search.Response{}, transportErr
 	}
 	defer resp.Body.Close()
 
@@ -111,6 +100,88 @@ func (c *client) Search(ctx context.Context, request search.Request) (search.Res
 		}
 	}
 	return response, normalizedErr
+}
+
+// doRequest makes at most two attempts. The second is permitted only after a
+// RoundTrip failure that returned no response, which is the only point at
+// which this client can establish that no response header or body was seen.
+func (c *client) doRequest(ctx context.Context, body []byte) (*http.Response, *search.Error) {
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, search.NewError(search.ErrorInternal)
+		}
+		c.setHeaders(req)
+
+		resp, err := c.httpClient.Do(req)
+		if err == nil && resp != nil {
+			return resp, nil
+		}
+		if resp != nil {
+			resp.Body.Close()
+			return nil, search.NewError(search.ErrorTransport)
+		}
+		if isDeadlineError(ctx, err) {
+			return nil, search.NewError(search.ErrorRequestTimeout)
+		}
+		if !canRetry(ctx, err) || attempt == 1 || !c.waitRetry(ctx, retryDelay) {
+			return nil, search.NewError(search.ErrorTransport)
+		}
+	}
+	return nil, search.NewError(search.ErrorTransport)
+}
+
+func isDeadlineError(ctx context.Context, err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded)
+}
+
+func canRetry(ctx context.Context, err error) bool {
+	return err != nil && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func newProductionTransport() *http.Transport {
+	return &http.Transport{
+		Proxy:               nil,
+		DialContext:         dialContextWithLimit,
+		TLSHandshakeTimeout: connectLimit,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	}
+}
+
+func dialContextWithLimit(ctx context.Context, network, address string) (net.Conn, error) {
+	timeout, ok := connectTimeout(ctx)
+	if !ok {
+		return nil, ctx.Err()
+	}
+	dialer := net.Dialer{Timeout: timeout}
+	return dialer.DialContext(ctx, network, address)
+}
+
+func connectTimeout(ctx context.Context) (time.Duration, bool) {
+	timeout := connectLimit
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return 0, false
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+	return timeout, true
 }
 
 // classifyHTTPError maps only the trusted HTTP status and a small allowlist of
@@ -215,6 +286,10 @@ func (c *client) buildBody(request search.Request) ([]byte, error) {
 	if model == "" {
 		model = defaultModel
 	}
+	maxOutputTokens := request.MaxOutputTokens
+	if maxOutputTokens == 0 {
+		maxOutputTokens = 1024
+	}
 	return json.Marshal(requestBody{
 		Model:           model,
 		Input:           request.Query,
@@ -222,7 +297,7 @@ func (c *client) buildBody(request search.Request) ([]byte, error) {
 		ToolChoice:      "required",
 		Stream:          true,
 		Store:           false,
-		MaxOutputTokens: 1024,
+		MaxOutputTokens: maxOutputTokens,
 		Reasoning:       reasoningSpec{Effort: "low"},
 	})
 }

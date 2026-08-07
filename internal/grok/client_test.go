@@ -3,12 +3,15 @@ package grok
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/patrick-fu/grok-search-cli/internal/search"
 )
@@ -303,13 +306,126 @@ func TestSearch_WrongContentTypeReturnsInvalidProviderResponse(t *testing.T) {
 
 func TestSearch_TransportErrorReturnsTransportError(t *testing.T) {
 	rt := &errRoundTripper{}
-	c := NewClient("tok", "1.0", rt)
+	c := NewClient("tok", "1.0", rt).(*client)
+	c.waitRetry = func(context.Context, time.Duration) bool { return true }
 	_, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
 	if err == nil {
 		t.Fatal("expected error for transport failure")
 	}
 	if err.Code != search.ErrorTransport {
 		t.Errorf("code = %s, want transport_error", err.Code)
+	}
+}
+
+func TestSearch_UsesRequestedMaxOutputTokens(t *testing.T) {
+	rt := &fakeRoundTripper{
+		status: 200,
+		header: http.Header{"Content-Type": {"text/event-stream"}},
+		text:   validSSE("ok"),
+	}
+	_, err := NewClient("tok", "1.0", rt).Search(context.Background(), search.Request{
+		Type: search.TypeWeb, Query: "q", MaxOutputTokens: 256,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body requestBody
+	if err := json.Unmarshal(rt.body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.MaxOutputTokens != 256 {
+		t.Errorf("max_output_tokens = %d, want 256", body.MaxOutputTokens)
+	}
+}
+
+func TestSearch_RetriesOnePreResponseTransportFailureWithExactRequest(t *testing.T) {
+	rt := &scriptedRoundTripper{results: []roundTripResult{
+		{err: errors.New("connection refused")},
+		{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, text: validSSEX("ok")},
+	}}
+	c := NewClient("tok", "1.0", rt).(*client)
+	var waited time.Duration
+	c.waitRetry = func(_ context.Context, delay time.Duration) bool {
+		waited = delay
+		return true
+	}
+	response, err := c.Search(context.Background(), search.Request{
+		Type: search.TypeX, Query: "same query", Model: "future-model", MaxOutputTokens: 256,
+	})
+	if err != nil || response.Answer != "ok" {
+		t.Fatalf("Search() response=%#v error=%v", response, err)
+	}
+	if waited != retryDelay || len(rt.bodies) != 2 || len(rt.headers) != 2 {
+		t.Fatalf("retry state waited=%s attempts=%d", waited, len(rt.bodies))
+	}
+	if !reflect.DeepEqual(rt.bodies[0], rt.bodies[1]) || !reflect.DeepEqual(rt.headers[0], rt.headers[1]) {
+		t.Fatal("retry changed request body or headers")
+	}
+	var body requestBody
+	if err := json.Unmarshal(rt.bodies[0], &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Model != "future-model" || body.MaxOutputTokens != 256 || len(body.Tools) != 1 || body.Tools[0].Type != "x_search" {
+		t.Fatalf("retry body = %#v", body)
+	}
+}
+
+func TestSearch_NeverRetriesStatusCancellationOrPartialStream(t *testing.T) {
+	tests := []struct {
+		name    string
+		results []roundTripResult
+		want    search.ErrorCode
+	}{
+		{
+			name: "HTTP status",
+			results: []roundTripResult{
+				{status: http.StatusServiceUnavailable, header: http.Header{}},
+				{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, text: validSSE("must not run")},
+			},
+			want: search.ErrorProviderUnavailable,
+		},
+		{
+			name: "deadline",
+			results: []roundTripResult{
+				{err: context.DeadlineExceeded},
+				{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, text: validSSE("must not run")},
+			},
+			want: search.ErrorRequestTimeout,
+		},
+		{
+			name: "cancellation",
+			results: []roundTripResult{
+				{err: context.Canceled},
+				{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, text: validSSE("must not run")},
+			},
+			want: search.ErrorTransport,
+		},
+		{
+			name: "partial stream",
+			results: []roundTripResult{
+				{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, reader: &prefixErrorReadCloser{prefix: []byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}"), err: io.ErrUnexpectedEOF}},
+				{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, text: validSSE("must not run")},
+			},
+			want: search.ErrorTransport,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rt := &scriptedRoundTripper{results: test.results}
+			c := NewClient("tok", "1.0", rt).(*client)
+			c.waitRetry = func(context.Context, time.Duration) bool {
+				t.Fatal("unexpected retry")
+				return false
+			}
+			_, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
+			if err == nil || err.Code != test.want {
+				t.Fatalf("error = %#v, want %s", err, test.want)
+			}
+			if len(rt.bodies) != 1 {
+				t.Fatalf("attempts = %d, want 1", len(rt.bodies))
+			}
+		})
 	}
 }
 
@@ -380,3 +496,48 @@ type errRoundTripper struct{}
 func (e *errRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, io.ErrUnexpectedEOF
 }
+
+type roundTripResult struct {
+	status int
+	header http.Header
+	text   string
+	reader io.ReadCloser
+	err    error
+}
+
+type scriptedRoundTripper struct {
+	results []roundTripResult
+	bodies  [][]byte
+	headers []http.Header
+}
+
+func (transport *scriptedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	body, _ := io.ReadAll(req.Body)
+	transport.bodies = append(transport.bodies, body)
+	transport.headers = append(transport.headers, req.Header.Clone())
+	result := transport.results[len(transport.bodies)-1]
+	if result.err != nil {
+		return nil, result.err
+	}
+	reader := result.reader
+	if reader == nil {
+		reader = io.NopCloser(strings.NewReader(result.text))
+	}
+	return &http.Response{StatusCode: result.status, Header: result.header, Body: reader}, nil
+}
+
+type prefixErrorReadCloser struct {
+	prefix []byte
+	err    error
+}
+
+func (reader *prefixErrorReadCloser) Read(buffer []byte) (int, error) {
+	if len(reader.prefix) == 0 {
+		return 0, reader.err
+	}
+	count := copy(buffer, reader.prefix)
+	reader.prefix = reader.prefix[count:]
+	return count, reader.err
+}
+
+func (reader *prefixErrorReadCloser) Close() error { return nil }

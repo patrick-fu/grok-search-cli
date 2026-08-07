@@ -16,6 +16,11 @@ import (
 	"github.com/patrick-fu/grok-search-cli/internal/search"
 )
 
+const (
+	maxSSEBodyBytes  = 8 << 20
+	maxSSEEventBytes = 2 << 20
+)
+
 // Normalize reads one provider SSE response and returns only the stable search
 // domain result. It never includes raw provider events or messages in errors.
 func Normalize(ctx context.Context, request search.Request, body io.Reader) (search.Response, *search.Error) {
@@ -31,7 +36,7 @@ func Normalize(ctx context.Context, request search.Request, body io.Reader) (sea
 		}
 
 		var event wireEvent
-		if json.Unmarshal([]byte(data), &event) != nil || event.Type == "" {
+		if json.Unmarshal([]byte(data), &event) != nil || strings.TrimSpace(event.Type) == "" {
 			return errInvalidProviderResponse
 		}
 		return state.accept(request, event, &collector)
@@ -125,6 +130,8 @@ func (e normalizeError) Error() string { return string(e.code) }
 
 var (
 	errProviderError           = normalizeError{code: search.ErrorProvider}
+	errOutputTooLarge          = normalizeError{code: search.ErrorOutputTooLarge}
+	errOutputTruncated         = normalizeError{code: search.ErrorOutputTruncated}
 	errInvalidProviderResponse = normalizeError{code: search.ErrorInvalidProviderResponse}
 )
 
@@ -139,9 +146,17 @@ func (state *normalizationState) accept(request search.Request, event wireEvent,
 	switch event.Type {
 	case "response.error", "response.failed":
 		return errProviderError
+	case "response.incomplete":
+		if isLengthStop(event.Type, event.Response) {
+			return errOutputTruncated
+		}
+		return errInvalidProviderResponse
 	case "response.completed":
 		if event.Response == nil {
 			return errInvalidProviderResponse
+		}
+		if isLengthStop(event.Type, event.Response) {
+			return errOutputTruncated
 		}
 		state.completed = event.Response
 	case "response.output_text.delta":
@@ -166,8 +181,9 @@ func (state *normalizationState) accept(request search.Request, event wireEvent,
 }
 
 func parseSSE(ctx context.Context, body io.Reader, accept func(string) error) error {
-	reader := bufio.NewReader(body)
+	reader := bufio.NewReader(&boundedReader{reader: body, remaining: maxSSEBodyBytes})
 	dataLines := make([]string, 0, 1)
+	eventBytes := 0
 
 	dispatch := func() error {
 		if len(dataLines) == 0 {
@@ -175,6 +191,7 @@ func parseSSE(ctx context.Context, body io.Reader, accept func(string) error) er
 		}
 		data := strings.Join(dataLines, "\n")
 		dataLines = dataLines[:0]
+		eventBytes = 0
 		return accept(data)
 	}
 
@@ -196,6 +213,13 @@ func parseSSE(ctx context.Context, body io.Reader, accept func(string) error) er
 				if strings.HasPrefix(value, " ") {
 					value = value[1:]
 				}
+				if len(dataLines) > 0 {
+					eventBytes++ // The SSE data field separator becomes a newline.
+				}
+				eventBytes += len(value)
+				if eventBytes > maxSSEEventBytes {
+					return errOutputTooLarge
+				}
 				dataLines = append(dataLines, value)
 			}
 		}
@@ -206,6 +230,30 @@ func parseSSE(ctx context.Context, body io.Reader, accept func(string) error) er
 			return err
 		}
 	}
+}
+
+// boundedReader accepts a stream exactly at its limit, but rejects a following
+// byte without allowing an unbounded line or buffer allocation.
+type boundedReader struct {
+	reader    io.Reader
+	remaining int
+}
+
+func (reader *boundedReader) Read(buffer []byte) (int, error) {
+	if reader.remaining == 0 {
+		var probe [1]byte
+		read, err := reader.reader.Read(probe[:])
+		if read > 0 {
+			return 0, errOutputTooLarge
+		}
+		return 0, err
+	}
+	if len(buffer) > reader.remaining {
+		buffer = buffer[:reader.remaining]
+	}
+	read, err := reader.reader.Read(buffer)
+	reader.remaining -= read
+	return read, err
 }
 
 type wireEvent struct {
@@ -224,9 +272,16 @@ type wireItem struct {
 }
 
 type wireResponse struct {
-	Model     string            `json:"model"`
-	Citations []json.RawMessage `json:"citations"`
-	Output    []wireOutput      `json:"output"`
+	Model             string                 `json:"model"`
+	Status            string                 `json:"status"`
+	FinishReason      string                 `json:"finish_reason"`
+	IncompleteDetails *wireIncompleteDetails `json:"incomplete_details"`
+	Citations         []json.RawMessage      `json:"citations"`
+	Output            []wireOutput           `json:"output"`
+}
+
+type wireIncompleteDetails struct {
+	Reason string `json:"reason"`
 }
 
 type wireOutput struct {
@@ -255,6 +310,18 @@ func completedAnswer(response wireResponse) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func isLengthStop(eventType string, response *wireResponse) bool {
+	if response == nil {
+		return false
+	}
+	if eventType == "response.completed" && (response.FinishReason == "length" ||
+		response.FinishReason == "max_tokens" || response.FinishReason == "max_output_tokens") {
+		return true
+	}
+	return (eventType == "response.incomplete" || response.Status == "incomplete") && response.IncompleteDetails != nil &&
+		(response.IncompleteDetails.Reason == "max_output_tokens" || response.IncompleteDetails.Reason == "max_tokens")
 }
 
 func isCompletedWebTool(event wireEvent) bool {

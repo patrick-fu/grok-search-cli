@@ -125,6 +125,246 @@ func TestAuthFileSelectionUsesGrokHomeAndInvocationOverride(t *testing.T) {
 	}
 }
 
+func TestCommonScalarFlagValidationPrecedesCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "missing timeout value", args: []string{"web", "--timeout"}},
+		{name: "missing timeout value before flag", args: []string{"web", "--timeout", "--verbose", "query"}},
+		{name: "empty timeout value", args: []string{"web", "--timeout=", "query"}},
+		{name: "duplicate timeout", args: []string{"web", "--timeout", "5s", "--timeout=10s", "query"}},
+		{name: "timeout below range", args: []string{"web", "--timeout", "999ms", "query"}},
+		{name: "zero timeout", args: []string{"web", "--timeout", "0s", "query"}},
+		{name: "negative timeout", args: []string{"web", "--timeout=-1s", "query"}},
+		{name: "timeout above range", args: []string{"web", "--timeout", "181s", "query"}},
+		{name: "timeout above range combined", args: []string{"web", "--timeout=3m1s", "query"}},
+		{name: "timeout without unit", args: []string{"web", "--timeout", "90", "query"}},
+		{name: "missing max tokens value", args: []string{"web", "--max-output-tokens"}},
+		{name: "empty max tokens value", args: []string{"web", "--max-output-tokens=", "query"}},
+		{name: "duplicate max tokens", args: []string{"web", "--max-output-tokens", "128", "--max-output-tokens=256", "query"}},
+		{name: "max tokens below range", args: []string{"web", "--max-output-tokens", "127", "query"}},
+		{name: "zero max tokens", args: []string{"web", "--max-output-tokens=0", "query"}},
+		{name: "max tokens above range", args: []string{"web", "--max-output-tokens", "4097", "query"}},
+		{name: "max tokens not an integer", args: []string{"web", "--max-output-tokens", "abc", "query"}},
+		{name: "max tokens fractional", args: []string{"web", "--max-output-tokens=1024.5", "query"}},
+		{name: "duplicate verbose", args: []string{"web", "--verbose", "--verbose", "query"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			loaded := false
+			runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+				loaded = true
+				return auth.Credential{}, nil
+			})
+			runtime.StdinIsTerminal = true
+
+			exitCode, stdout, stderr := run(runtime, test.args, "")
+			if exitCode != 2 {
+				t.Fatalf("exit code = %d, want 2", exitCode)
+			}
+			if stdout != usageJSON {
+				t.Fatalf("stdout = %q, want %q", stdout, usageJSON)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			if loaded {
+				t.Fatal("credential loader was called for invalid flags")
+			}
+		})
+	}
+}
+
+func TestCommonScalarFlagsAreForwardedToSearch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		args          []string
+		wantTimeout   time.Duration
+		wantMaxTokens int
+	}{
+		{name: "defaults", args: []string{"web", "query"}, wantTimeout: 90 * time.Second, wantMaxTokens: 1024},
+		{name: "timeout lower bound", args: []string{"web", "--timeout", "1s", "query"}, wantTimeout: time.Second, wantMaxTokens: 1024},
+		{name: "timeout upper bound", args: []string{"web", "--timeout=180s", "query"}, wantTimeout: 180 * time.Second, wantMaxTokens: 1024},
+		{name: "timeout fractional", args: []string{"web", "--timeout", "1500ms", "query"}, wantTimeout: 1500 * time.Millisecond, wantMaxTokens: 1024},
+		{name: "max tokens lower bound", args: []string{"web", "--max-output-tokens", "128", "query"}, wantTimeout: 90 * time.Second, wantMaxTokens: 128},
+		{name: "max tokens upper bound", args: []string{"web", "--max-output-tokens=4096", "query"}, wantTimeout: 90 * time.Second, wantMaxTokens: 4096},
+		{name: "both custom", args: []string{"web", "--timeout", "5s", "--max-output-tokens", "2048", "query"}, wantTimeout: 5 * time.Second, wantMaxTokens: 2048},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			credential := auth.Credential{AccessToken: "TEST_ONLY_ACCESS_SENTINEL_DO_NOT_USE"}
+			runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+				return credential, nil
+			})
+			runtime.StdinIsTerminal = true
+			runtime.Search = func(ctx context.Context, request search.Request, gotCredential auth.Credential) (search.Response, *search.Error) {
+				if gotCredential != credential {
+					t.Fatalf("credential = %#v", gotCredential)
+				}
+				wantRequest := search.Request{Type: search.Type("web"), Query: "query", Model: "grok-4.5", MaxOutputTokens: test.wantMaxTokens}
+				if request != wantRequest {
+					t.Fatalf("request = %#v, want %#v", request, wantRequest)
+				}
+				deadline, ok := ctx.Deadline()
+				if !ok {
+					t.Fatal("search context has no deadline")
+				}
+				remaining := time.Until(deadline)
+				if remaining <= 0 || remaining > test.wantTimeout {
+					t.Fatalf("deadline remaining = %v, want within %v", remaining, test.wantTimeout)
+				}
+				if test.wantTimeout > 5*time.Second && remaining < test.wantTimeout-5*time.Second {
+					t.Fatalf("deadline remaining = %v, want close to %v", remaining, test.wantTimeout)
+				}
+				return search.Response{
+					SchemaVersion: search.SchemaVersion,
+					Type:          request.Type,
+					Query:         request.Query,
+					Model:         request.Model,
+					Answer:        "Offline response.",
+					Sources:       []search.Source{},
+					Warnings:      []search.Warning{},
+				}, nil
+			}
+
+			exitCode, stdout, stderr := run(runtime, test.args, "")
+			if exitCode != 0 || stderr != "" {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
+			}
+		})
+	}
+}
+
+func TestVerboseDiagnosticsAreAllowlistedAndNeverChangeStdout(t *testing.T) {
+	t.Parallel()
+
+	credential := auth.Credential{AccessToken: "TEST_ONLY_ACCESS_SENTINEL_DO_NOT_USE"}
+	const query = "SENTINEL_QUERY_DO_NOT_PRINT"
+
+	tests := []struct {
+		name         string
+		searchFunc   func(context.Context, search.Request, auth.Credential) (search.Response, *search.Error)
+		wantPhases   []string
+		wantCodes    []string
+		wantEvidence []string
+	}{
+		{
+			name: "success",
+			searchFunc: func(_ context.Context, request search.Request, _ auth.Credential) (search.Response, *search.Error) {
+				return search.Response{
+					SchemaVersion: search.SchemaVersion,
+					Type:          request.Type,
+					Query:         request.Query,
+					Model:         request.Model,
+					Answer:        "SENTINEL_ANSWER_DO_NOT_PRINT",
+					Sources:       []search.Source{},
+					Warnings:      []search.Warning{},
+				}, nil
+			},
+			wantPhases: []string{"parse", "auth", "search"},
+			wantCodes:  []string{"ok", "ok", "ok"},
+		},
+		{
+			name: "search error",
+			searchFunc: func(_ context.Context, _ search.Request, _ auth.Credential) (search.Response, *search.Error) {
+				return search.Response{}, search.NewError(search.ErrorRateLimited).WithHTTPStatus(429)
+			},
+			wantPhases:   []string{"parse", "auth", "search"},
+			wantCodes:    []string{"ok", "ok", "rate_limited"},
+			wantEvidence: []string{"http_status=429"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+				return credential, nil
+			})
+			runtime.StdinIsTerminal = true
+			runtime.Search = test.searchFunc
+
+			quietExit, quietStdout, quietStderr := run(runtime, []string{"web", query}, "")
+			if quietStderr != "" {
+				t.Fatalf("non-verbose stderr = %q, want empty", quietStderr)
+			}
+			verboseExit, verboseStdout, verboseStderr := run(runtime, []string{"web", "--verbose", query}, "")
+			if verboseExit != quietExit || verboseStdout != quietStdout {
+				t.Fatalf("verbose changed exit/stdout: exit %d vs %d, stdout %q vs %q", verboseExit, quietExit, verboseStdout, quietStdout)
+			}
+
+			lines := strings.Split(strings.TrimSuffix(verboseStderr, "\n"), "\n")
+			if len(lines) != len(test.wantPhases) {
+				t.Fatalf("stderr = %q, want %d diagnostic lines", verboseStderr, len(test.wantPhases))
+			}
+			for index, line := range lines {
+				evidence := []string{}
+				if index == len(test.wantPhases)-1 {
+					evidence = test.wantEvidence
+				}
+				assertDiagnostic(t, line, test.wantPhases[index], test.wantCodes[index], evidence...)
+			}
+			for _, forbidden := range []string{credential.AccessToken, "Authorization", "citation"} {
+				if strings.Contains(verboseStdout, forbidden) {
+					t.Fatalf("verbose output leaked %q", forbidden)
+				}
+			}
+			for _, forbidden := range []string{credential.AccessToken, "Authorization", query, "SENTINEL_ANSWER_DO_NOT_PRINT", "citation"} {
+				if strings.Contains(verboseStderr, forbidden) {
+					t.Fatalf("verbose diagnostics leaked %q", forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestVerboseDoesNotChangeUsageErrorOutput(t *testing.T) {
+	t.Parallel()
+
+	runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+		t.Fatal("credential loader must not be called")
+		return auth.Credential{}, nil
+	})
+	runtime.StdinIsTerminal = true
+
+	exitCode, stdout, stderr := run(runtime, []string{"web", "--verbose", "--timeout", "1h", "query"}, "")
+	if exitCode != 2 || stdout != usageJSON {
+		t.Fatalf("exit=%d stdout=%q, want exit 2 stdout %q", exitCode, stdout, usageJSON)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty on usage error", stderr)
+	}
+}
+
+func assertDiagnostic(t *testing.T, line, wantPhase, wantCode string, wantEvidence ...string) {
+	t.Helper()
+	fields := strings.Fields(line)
+	if len(fields) < 3 || !strings.HasPrefix(fields[0], "phase=") || !strings.HasPrefix(fields[1], "elapsed=") || !strings.HasPrefix(fields[2], "code=") {
+		t.Fatalf("diagnostic line = %q", line)
+	}
+	if fields[0] != "phase="+wantPhase || fields[2] != "code="+wantCode {
+		t.Fatalf("diagnostic line = %q, want phase=%s code=%s", line, wantPhase, wantCode)
+	}
+	if _, err := time.ParseDuration(strings.TrimPrefix(fields[1], "elapsed=")); err != nil {
+		t.Fatalf("diagnostic elapsed = %q: %v", fields[1], err)
+	}
+	if got := fields[3:]; len(got) != len(wantEvidence) {
+		t.Fatalf("diagnostic evidence = %v, want %v", got, wantEvidence)
+	} else {
+		for index := range wantEvidence {
+			if got[index] != wantEvidence[index] {
+				t.Fatalf("diagnostic evidence = %v, want %v", got, wantEvidence)
+			}
+		}
+	}
+}
+
 func TestAuthFailuresUseStableJSONAndExitThree(t *testing.T) {
 	t.Parallel()
 
@@ -189,7 +429,7 @@ func TestWebAndXSearchRenderOneNormalizedResponseAndPreserveQuery(t *testing.T) 
 				if gotCredential != credential {
 					t.Fatalf("credential = %#v", gotCredential)
 				}
-				wantRequest := search.Request{Type: search.Type(test.command), Query: test.query, Model: "grok-4.5"}
+				wantRequest := search.Request{Type: search.Type(test.command), Query: test.query, Model: "grok-4.5", MaxOutputTokens: 1024}
 				if request != wantRequest {
 					t.Fatalf("request = %#v", request)
 				}
@@ -658,6 +898,12 @@ func TestProcessLevelWebAndXShareGoldenSchemaAndExit(t *testing.T) {
 				return append(env, "GROK_HOME="+t.TempDir())
 			},
 		},
+		{
+			name:     "out of range timeout is usage before auth",
+			args:     []string{"--timeout", "1h", "query"},
+			wantExit: 2,
+			wantJSON: usageJSON,
+		},
 	}
 
 	for _, command := range []string{"web", "x"} {
@@ -684,6 +930,43 @@ func TestProcessLevelWebAndXShareGoldenSchemaAndExit(t *testing.T) {
 					t.Fatalf("command %v: exit=%d stdout=%q stderr=%q, want exit %d stdout %q stderr empty", argv, exitCode, stdout.String(), stderr.String(), test.wantExit, test.wantJSON)
 				}
 			})
+		}
+	}
+}
+
+func TestProcessLevelVerboseDiagnosticsAreOfflineAndSanitized(t *testing.T) {
+	t.Parallel()
+
+	binary := buildCLIBinary(t)
+	authPath := filepath.Join(t.TempDir(), "missing.json")
+	const query = "SENTINEL_PROCESS_QUERY_DO_NOT_PRINT"
+
+	cmd := exec.Command(binary, "web", "--verbose", "--auth-file", authPath, query)
+	cmd.Stdin = strings.NewReader("")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		var exitError *exec.ExitError
+		if !errors.As(err, &exitError) {
+			t.Fatalf("run: %v", err)
+		}
+		exitCode = exitError.ExitCode()
+	}
+
+	want := "{\"schema_version\":1,\"error\":{\"code\":\"auth_missing\",\"message\":\"No valid Grok credential was found. Run `grok login`.\",\"retryable\":false}}\n"
+	if exitCode != 3 || stdout.String() != want {
+		t.Fatalf("exit=%d stdout=%q, want exit 3 stdout %q", exitCode, stdout.String(), want)
+	}
+	if !strings.Contains(stderr.String(), "phase=auth") || !strings.Contains(stderr.String(), "code=auth_missing") {
+		t.Fatalf("stderr = %q, want auth_missing diagnostic", stderr.String())
+	}
+	for _, forbidden := range []string{authPath, query, "Authorization", "SENTINEL"} {
+		if strings.Contains(stdout.String(), forbidden) || strings.Contains(stderr.String(), forbidden) {
+			t.Fatalf("process output leaked %q", forbidden)
 		}
 	}
 }

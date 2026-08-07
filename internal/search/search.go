@@ -18,6 +18,9 @@ type Request struct {
 	Type  Type
 	Query string
 	Model string
+	// MaxOutputTokens bounds the provider's output size. Zero means the
+	// transport default applies.
+	MaxOutputTokens int
 }
 
 // Response is a successful normalized answer to one Request.

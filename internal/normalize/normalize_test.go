@@ -356,6 +356,46 @@ func TestNormalizeProviderErrorResponseFailedEvent(t *testing.T) {
 	}
 }
 
+func TestNormalizeOutputTruncatedForTypedLengthStops(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "incomplete event max output tokens",
+			body: `data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}
+
+`,
+		},
+		{
+			name: "completed event max tokens",
+			body: `data: {"type":"response.web_search_call.completed"}
+
+data: {"type":"response.completed","response":{"status":"incomplete","incomplete_details":{"reason":"max_tokens"}}}
+
+`,
+		},
+		{
+			name: "length finish reason",
+			body: `data: {"type":"response.completed","response":{"finish_reason":"length"}}
+
+`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, searchErr := normalize.Normalize(context.Background(), search.Request{Type: search.TypeWeb, Model: "m"}, strings.NewReader(test.body))
+			if searchErr == nil {
+				t.Fatal("expected error")
+			}
+			if searchErr.Code != search.ErrorOutputTruncated {
+				t.Fatalf("code = %q, want %q", searchErr.Code, search.ErrorOutputTruncated)
+			}
+		})
+	}
+}
+
 // --- invalid_provider_response tests ---
 
 func TestNormalizeInvalidProviderResponseMalformedJSON(t *testing.T) {
@@ -397,6 +437,100 @@ func TestNormalizeInvalidProviderResponseMissingType(t *testing.T) {
 	}
 	if searchErr.Code != search.ErrorInvalidProviderResponse {
 		t.Fatalf("code = %q, want %q", searchErr.Code, search.ErrorInvalidProviderResponse)
+	}
+}
+
+func TestNormalizeInvalidProviderResponseNonObjectJSON(t *testing.T) {
+	_, searchErr := normalize.Normalize(context.Background(), search.Request{Type: search.TypeWeb, Model: "m"}, strings.NewReader("data: []\n\n"))
+	if searchErr == nil {
+		t.Fatal("expected error")
+	}
+	if searchErr.Code != search.ErrorInvalidProviderResponse {
+		t.Fatalf("code = %q, want %q", searchErr.Code, search.ErrorInvalidProviderResponse)
+	}
+}
+
+// --- SSE framing and limits tests ---
+
+func TestNormalizeSSEFramingIgnoresCommentsAndUnknownFields(t *testing.T) {
+	body := strings.NewReader(`event: response.created
+id: 1
+retry: 1000
+: keepalive
+
+data: {"type":"response.web_search_call.completed"}
+
+: completion follows
+unknown: ignored
+data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"answer"}]}]}}
+
+`)
+
+	response, searchErr := normalize.Normalize(context.Background(), search.Request{Type: search.TypeWeb, Model: "m"}, body)
+	if searchErr != nil {
+		t.Fatalf("Normalize() error = %v", searchErr)
+	}
+	if response.Answer != "answer" {
+		t.Fatalf("answer = %q", response.Answer)
+	}
+}
+
+func TestNormalizeSSESizeLimits(t *testing.T) {
+	const (
+		maxBody  = 8 << 20
+		maxEvent = 2 << 20
+	)
+	valid := `data: {"type":"response.web_search_call.completed"}
+
+data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"answer"}]}]}}
+
+`
+
+	tests := []struct {
+		name    string
+		body    string
+		wantErr search.ErrorCode
+	}{
+		{
+			name: "data event at limit",
+			body: "data: " + sizedUnknownEvent(maxEvent) + "\n\n" + valid,
+		},
+		{
+			name: "multiline data event over limit",
+			body: "data: " + strings.Repeat("x", maxEvent/2+1) + "\n" +
+				"data: " + strings.Repeat("x", maxEvent/2+1) + "\n\n",
+			wantErr: search.ErrorOutputTooLarge,
+		},
+		{
+			name: "complete body at limit",
+			body: valid + ":" + strings.Repeat("x", maxBody-len(valid)-1),
+		},
+		{
+			name:    "complete body over limit",
+			body:    valid + ":" + strings.Repeat("x", maxBody-len(valid)),
+			wantErr: search.ErrorOutputTooLarge,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response, searchErr := normalize.Normalize(context.Background(), search.Request{Type: search.TypeWeb, Model: "m"}, strings.NewReader(test.body))
+			if test.wantErr == "" {
+				if searchErr != nil {
+					t.Fatalf("Normalize() error = %v", searchErr)
+				}
+				if response.Answer != "answer" {
+					t.Fatalf("answer = %q", response.Answer)
+				}
+				return
+			}
+			if searchErr == nil {
+				t.Fatal("expected error")
+			}
+			if searchErr.Code != test.wantErr {
+				t.Fatalf("code = %q, want %q", searchErr.Code, test.wantErr)
+			}
+		})
 	}
 }
 
@@ -604,6 +738,12 @@ func TestNormalizeTransportErrorBodyIOFailure(t *testing.T) {
 type errReader struct{ err error }
 
 func (r *errReader) Read([]byte) (int, error) { return 0, r.err }
+
+func sizedUnknownEvent(size int) string {
+	const prefix = `{"type":"unknown","padding":"`
+	const suffix = `"}`
+	return prefix + strings.Repeat("x", size-len(prefix)-len(suffix)) + suffix
+}
 
 func sameWarnings(got, want []search.Warning) bool {
 	if len(got) != len(want) {

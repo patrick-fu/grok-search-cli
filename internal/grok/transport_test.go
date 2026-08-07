@@ -1,9 +1,11 @@
 package grok
 
 import (
+	"context"
 	"crypto/tls"
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestProductionTransport_NoProxy(t *testing.T) {
@@ -25,6 +27,25 @@ func TestProductionTransport_TLSMinVersion(t *testing.T) {
 	}
 	if transport.TLSClientConfig.MinVersion != tls.VersionTLS12 {
 		t.Errorf("MinVersion = %d, want %d", transport.TLSClientConfig.MinVersion, tls.VersionTLS12)
+	}
+}
+
+func TestProductionTransport_ConnectLimit(t *testing.T) {
+	transport := productionTransport().(*http.Transport)
+	if transport.DialContext == nil {
+		t.Fatal("DialContext must apply the connect cap")
+	}
+	if transport.TLSHandshakeTimeout != connectLimit {
+		t.Errorf("TLSHandshakeTimeout = %s, want %s", transport.TLSHandshakeTimeout, connectLimit)
+	}
+
+	if timeout, ok := connectTimeout(context.Background()); !ok || timeout != connectLimit {
+		t.Fatalf("background connect timeout = %s, %t", timeout, ok)
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(time.Second))
+	defer cancel()
+	if timeout, ok := connectTimeout(ctx); !ok || timeout <= 0 || timeout > time.Second {
+		t.Fatalf("deadline connect timeout = %s, %t", timeout, ok)
 	}
 }
 
