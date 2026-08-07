@@ -63,7 +63,7 @@ func NewClient(accessToken, cliVersion string, rt http.RoundTripper) Client {
 }
 
 func (c *client) Search(ctx context.Context, request search.Request) (search.Response, *search.Error) {
-	if request.Type != search.TypeWeb {
+	if request.Type != search.TypeWeb && request.Type != search.TypeX {
 		return search.Response{}, search.NewError(search.ErrorInternal)
 	}
 
@@ -218,13 +218,22 @@ func (c *client) buildBody(request search.Request) ([]byte, error) {
 	return json.Marshal(requestBody{
 		Model:           model,
 		Input:           request.Query,
-		Tools:           []searchTool{{Type: "web_search"}},
+		Tools:           []searchTool{{Type: toolTypeFor(request.Type)}},
 		ToolChoice:      "required",
 		Stream:          true,
 		Store:           false,
 		MaxOutputTokens: 1024,
 		Reasoning:       reasoningSpec{Effort: "low"},
 	})
+}
+
+// toolTypeFor maps a request search surface to the single provider tool. Each
+// surface emits exactly one tool with no web fallback.
+func toolTypeFor(t search.Type) string {
+	if t == search.TypeX {
+		return "x_search"
+	}
+	return "web_search"
 }
 
 func (c *client) setHeaders(req *http.Request) {

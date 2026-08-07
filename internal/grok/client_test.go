@@ -47,18 +47,109 @@ func validSSE(answer string) string {
 		"data: [DONE]\n\n"
 }
 
-func TestSearch_RejectsNonWebWithoutNetwork(t *testing.T) {
+// validSSEX returns an SSE stream with a completed x_search custom tool call and response.completed.
+func validSSEX(answer string) string {
+	return "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"custom_tool_call\",\"name\":\"x_search\",\"status\":\"completed\"}}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"model\":\"grok-4.5\",\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"" + answer + "\"}]}]}}\n\n" +
+		"data: [DONE]\n\n"
+}
+
+func TestSearch_RejectsUnsupportedTypeWithoutNetwork(t *testing.T) {
 	rt := &fakeRoundTripper{status: 200, header: http.Header{"Content-Type": {"text/event-stream"}}}
 	c := NewClient("tok", "1.0", rt)
-	_, err := c.Search(context.Background(), search.Request{Type: search.TypeX, Query: "test"})
+	_, err := c.Search(context.Background(), search.Request{Type: search.Type("unknown"), Query: "test"})
 	if err == nil {
-		t.Fatal("expected error for non-web")
+		t.Fatal("expected error for unsupported type")
 	}
 	if err.Code != search.ErrorInternal {
 		t.Fatalf("expected internal_error, got %s", err.Code)
 	}
 	if atomic.LoadInt32(&rt.called) != 0 {
-		t.Fatal("non-web must not make network request")
+		t.Fatal("unsupported type must not make network request")
+	}
+}
+
+func TestSearch_ExactRequestForX(t *testing.T) {
+	rt := &fakeRoundTripper{
+		status: 200,
+		header: http.Header{"Content-Type": {"text/event-stream"}},
+		text:   validSSEX("answer"),
+	}
+	c := NewClient("mytoken", "0.1.0", rt)
+	resp, err := c.Search(context.Background(), search.Request{Type: search.TypeX, Query: "hello world", Model: "grok-4.5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Answer != "answer" {
+		t.Fatalf("expected answer 'answer', got %q", resp.Answer)
+	}
+	if resp.Type != search.TypeX {
+		t.Fatalf("response type = %q, want x", resp.Type)
+	}
+
+	// Verify exact method and URL
+	if rt.req.Method != http.MethodPost {
+		t.Fatalf("method = %s, want POST", rt.req.Method)
+	}
+	if rt.req.URL.String() != endpointURL {
+		t.Fatalf("url = %s, want %s", rt.req.URL, endpointURL)
+	}
+
+	// Headers must be identical to the web profile
+	expectHeaders := map[string]string{
+		"Authorization":            "Bearer mytoken",
+		"Accept":                   "text/event-stream",
+		"Content-Type":             "application/json",
+		"X-Grok-Client-Mode":       "headless",
+		"X-Grok-Client-Identifier": "grok-search-cli",
+		"X-Grok-Client-Version":    "0.2.117+grok-search-cli.0.1.0",
+		"User-Agent":               "grok-search-cli/0.1.0",
+	}
+	h := rt.req.Header
+	for k, want := range expectHeaders {
+		got := h.Get(k)
+		if got != want {
+			t.Errorf("header %s = %q, want %q", k, got, want)
+		}
+	}
+	allowedTransport := map[string]bool{"Host": true, "Content-Length": true}
+	for k := range h {
+		if _, ok := expectHeaders[k]; !ok {
+			if allowedTransport[k] {
+				continue
+			}
+			t.Errorf("unexpected header: %s = %q", k, h.Get(k))
+		}
+	}
+
+	// Body shape: identical to web except the single tool is x_search
+	var body requestBody
+	if err := json.Unmarshal(rt.body, &body); err != nil {
+		t.Fatalf("body unmarshal: %v", err)
+	}
+	if body.Model != "grok-4.5" {
+		t.Errorf("model = %s, want grok-4.5", body.Model)
+	}
+	if body.Input != "hello world" {
+		t.Errorf("input = %s, want hello world", body.Input)
+	}
+	if body.ToolChoice != "required" {
+		t.Errorf("tool_choice = %s, want required", body.ToolChoice)
+	}
+	if !body.Stream {
+		t.Error("stream should be true")
+	}
+	if body.Store {
+		t.Error("store should be false")
+	}
+	if body.MaxOutputTokens != 1024 {
+		t.Errorf("max_output_tokens = %d, want 1024", body.MaxOutputTokens)
+	}
+	if body.Reasoning.Effort != "low" {
+		t.Errorf("reasoning.effort = %s, want low", body.Reasoning.Effort)
+	}
+	if len(body.Tools) != 1 || body.Tools[0].Type != "x_search" {
+		t.Errorf("tools = %v, want [{x_search}]", body.Tools)
 	}
 }
 

@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -152,19 +154,23 @@ func TestAuthFailuresUseStableJSONAndExitThree(t *testing.T) {
 	}
 }
 
-func TestWebSearchRendersOneNormalizedResponseAndPreservesQuery(t *testing.T) {
+func TestWebAndXSearchRenderOneNormalizedResponseAndPreserveQuery(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name     string
+		command  string
 		args     []string
 		stdin    string
 		terminal bool
 		query    string
 	}{
-		{name: "piped CRLF", args: []string{"web"}, stdin: "find docs\r\n", query: "find docs"},
-		{name: "terminal positional", args: []string{"web", "find docs"}, terminal: true, query: "find docs"},
-		{name: "empty stdin falls back to positional", args: []string{"web", "find docs"}, query: "find docs"},
+		{name: "web piped CRLF", command: "web", args: []string{"web"}, stdin: "find docs\r\n", query: "find docs"},
+		{name: "web terminal positional", command: "web", args: []string{"web", "find docs"}, terminal: true, query: "find docs"},
+		{name: "web empty stdin falls back to positional", command: "web", args: []string{"web", "find docs"}, query: "find docs"},
+		{name: "x piped CRLF", command: "x", args: []string{"x"}, stdin: "find docs\r\n", query: "find docs"},
+		{name: "x terminal positional", command: "x", args: []string{"x", "find docs"}, terminal: true, query: "find docs"},
+		{name: "x empty stdin falls back to positional", command: "x", args: []string{"x", "find docs"}, query: "find docs"},
 	}
 
 	for _, test := range tests {
@@ -183,12 +189,13 @@ func TestWebSearchRendersOneNormalizedResponseAndPreservesQuery(t *testing.T) {
 				if gotCredential != credential {
 					t.Fatalf("credential = %#v", gotCredential)
 				}
-				if request != (search.Request{Type: search.TypeWeb, Query: test.query, Model: "grok-4.5"}) {
+				wantRequest := search.Request{Type: search.Type(test.command), Query: test.query, Model: "grok-4.5"}
+				if request != wantRequest {
 					t.Fatalf("request = %#v", request)
 				}
 				return search.Response{
 					SchemaVersion: search.SchemaVersion,
-					Type:          search.TypeWeb,
+					Type:          request.Type,
 					Query:         request.Query,
 					Model:         request.Model,
 					ProviderModel: "grok-4.5-build",
@@ -199,7 +206,7 @@ func TestWebSearchRendersOneNormalizedResponseAndPreservesQuery(t *testing.T) {
 			}
 
 			exitCode, stdout, stderr := run(runtime, test.args, test.stdin)
-			want := fmt.Sprintf("{\"schema_version\":1,\"type\":\"web\",\"query\":%q,\"model\":\"grok-4.5\",\"provider_model\":\"grok-4.5-build\",\"answer\":\"The docs are available.\",\"sources\":[{\"url\":\"https://docs.example.test/\"}],\"warnings\":[]}\n", test.query)
+			want := fmt.Sprintf("{\"schema_version\":1,\"type\":%q,\"query\":%q,\"model\":\"grok-4.5\",\"provider_model\":\"grok-4.5-build\",\"answer\":\"The docs are available.\",\"sources\":[{\"url\":\"https://docs.example.test/\"}],\"warnings\":[]}\n", test.command, test.query)
 			if exitCode != 0 || stdout != want || stderr != "" {
 				t.Fatalf("exit=%d stdout=%q stderr=%q, want stdout %q", exitCode, stdout, stderr, want)
 			}
@@ -212,6 +219,39 @@ func TestWebSearchRendersOneNormalizedResponseAndPreservesQuery(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWebAndXShareSearchErrorEnvelopeAndExit(t *testing.T) {
+	t.Parallel()
+
+	searchErr := search.NewError(search.ErrorRateLimited).
+		WithHTTPStatus(429).
+		WithRetryAfterSeconds(0).
+		WithRequestID("safe-request-id")
+	want := "{\"schema_version\":1,\"error\":{\"code\":\"rate_limited\",\"message\":\"The provider rate-limited the search request.\",\"retryable\":true,\"http_status\":429,\"retry_after_seconds\":0,\"request_id\":\"safe-request-id\"}}\n"
+
+	var outputs []string
+	for _, command := range []string{"web", "x"} {
+		runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+			return auth.Credential{}, nil
+		})
+		runtime.StdinIsTerminal = true
+		runtime.Search = func(_ context.Context, request search.Request, _ auth.Credential) (search.Response, *search.Error) {
+			if request.Type != search.Type(command) {
+				t.Fatalf("request type = %q, want %q", request.Type, search.Type(command))
+			}
+			return search.Response{}, searchErr
+		}
+
+		exitCode, stdout, stderr := run(runtime, []string{command, "query"}, "")
+		if exitCode != 4 || stdout != want || stderr != "" {
+			t.Fatalf("%s: exit=%d stdout=%q stderr=%q, want exit 4 stdout %q stderr empty", command, exitCode, stdout, stderr, want)
+		}
+		outputs = append(outputs, stdout)
+	}
+	if outputs[0] != outputs[1] {
+		t.Fatalf("web and x error envelopes differ: %q vs %q", outputs[0], outputs[1])
 	}
 }
 
@@ -427,6 +467,12 @@ func TestValidLegacyAndCurrentCredentialsFailClosedWithoutLeakingOrChangingStore
 			runtime := cli.DefaultRuntime()
 			runtime.Now = func() time.Time { return fixedNow }
 			runtime.StdinIsTerminal = true
+			runtime.Search = func(_ context.Context, _ search.Request, credential auth.Credential) (search.Response, *search.Error) {
+				if credential.AccessToken != "TEST_ONLY_ACCESS_SENTINEL_DO_NOT_USE" {
+					t.Fatalf("unexpected credential")
+				}
+				return search.Response{}, search.NewError(search.ErrorInternal)
+			}
 			exitCode, stdout, stderr := run(runtime, []string{"x", "--auth-file", path, "query"}, "")
 
 			if exitCode != 70 || stdout != internalJSON || stderr != "" {
@@ -576,6 +622,81 @@ func run(runtime cli.Runtime, args []string, stdin string) (int, string, string)
 	var stderr bytes.Buffer
 	exitCode := cli.Run(args, strings.NewReader(stdin), &stdout, &stderr, runtime)
 	return exitCode, stdout.String(), stderr.String()
+}
+
+func TestProcessLevelWebAndXShareGoldenSchemaAndExit(t *testing.T) {
+	t.Parallel()
+
+	binary := buildCLIBinary(t)
+	authMissingJSON := "{\"schema_version\":1,\"error\":{\"code\":\"auth_missing\",\"message\":\"No valid Grok credential was found. Run `grok login`.\",\"retryable\":false}}\n"
+
+	tests := []struct {
+		name     string
+		args     []string
+		env      func(t *testing.T) []string
+		wantExit int
+		wantJSON string
+	}{
+		{
+			name:     "usage",
+			args:     []string{},
+			wantExit: 2,
+			wantJSON: usageJSON,
+		},
+		{
+			name:     "auth missing",
+			args:     []string{"query"},
+			wantExit: 3,
+			wantJSON: authMissingJSON,
+			env: func(t *testing.T) []string {
+				env := []string{}
+				for _, entry := range os.Environ() {
+					if !strings.HasPrefix(entry, "GROK_HOME=") {
+						env = append(env, entry)
+					}
+				}
+				return append(env, "GROK_HOME="+t.TempDir())
+			},
+		},
+	}
+
+	for _, command := range []string{"web", "x"} {
+		for _, test := range tests {
+			t.Run(command+"/"+test.name, func(t *testing.T) {
+				argv := append([]string{command}, test.args...)
+				cmd := exec.Command(binary, argv...)
+				cmd.Stdin = strings.NewReader("")
+				if test.env != nil {
+					cmd.Env = test.env(t)
+				}
+				var stdout bytes.Buffer
+				var stderr bytes.Buffer
+				cmd.Stdout = &stdout
+				cmd.Stderr = &stderr
+				if err := cmd.Run(); err != nil {
+					var exitError *exec.ExitError
+					if !errors.As(err, &exitError) {
+						t.Fatalf("run %v: %v", argv, err)
+					}
+				}
+				exitCode := cmd.ProcessState.ExitCode()
+				if exitCode != test.wantExit || stdout.String() != test.wantJSON || stderr.String() != "" {
+					t.Fatalf("command %v: exit=%d stdout=%q stderr=%q, want exit %d stdout %q stderr empty", argv, exitCode, stdout.String(), stderr.String(), test.wantExit, test.wantJSON)
+				}
+			})
+		}
+	}
+}
+
+func buildCLIBinary(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "grok-search")
+	command := exec.Command("go", "build", "-o", path, "./cmd/grok-search")
+	command.Dir = filepath.Join("..", "..")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, output)
+	}
+	return path
 }
 
 func writeStore(t *testing.T, directory, name string, data []byte, mode os.FileMode) string {

@@ -87,6 +87,207 @@ data: [DONE]
 	}
 }
 
+func TestNormalizeXSuccessPreservesRequestAndNormalizesCitations(t *testing.T) {
+	body := strings.NewReader(`data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","status":"completed","name":"x_keyword_search"}}
+
+data: {"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","url":"https://x.example.test/i/status/111","title":"[1]"}}
+
+data: {"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","url":"https://x.example.test/i/status/111","title":"First public post"}}
+
+data: {"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","url":"https://x.example.test/i/status/222","title":"https://x.example.test/i/status/222"}}
+
+data: {"type":"response.completed","response":{"model":"grok-4.5-build","output":[{"content":[{"type":"output_text","text":"Two public posts match.","annotations":[{"type":"url_citation","url":"https://x.example.test/i/status/111","title":"First public post"},{"type":"url_citation","url":"https://x.example.test/i/status/222","title":"https://x.example.test/i/status/222"}]}]}],"citations":["https://x.example.test/i/status/111"]}}
+
+data: [DONE]
+
+`)
+
+	response, searchErr := normalize.Normalize(context.Background(), search.Request{
+		Type: search.TypeX, Query: "find posts", Model: "grok-4.5",
+	}, body)
+	if searchErr != nil {
+		t.Fatalf("Normalize() error = %v", searchErr)
+	}
+	if response.Type != search.TypeX || response.Query != "find posts" || response.Model != "grok-4.5" || response.ProviderModel != "grok-4.5-build" || response.Answer != "Two public posts match." {
+		t.Fatalf("response = %#v", response)
+	}
+	wantSources := []search.Source{
+		{URL: "https://x.example.test/i/status/111", Title: "First public post"},
+		{URL: "https://x.example.test/i/status/222"},
+	}
+	if !sameSources(response.Sources, wantSources) {
+		t.Fatalf("sources = %#v, want %#v", response.Sources, wantSources)
+	}
+	if len(response.Warnings) != 0 {
+		t.Fatalf("warnings = %#v, want none", response.Warnings)
+	}
+}
+
+func TestNormalizeXCitationWarningsMatchWeb(t *testing.T) {
+	tests := []struct {
+		name               string
+		citationData       string
+		completedCitations string
+		wantWarnings       []search.Warning
+	}{
+		{
+			name:               "missing",
+			completedCitations: `[]`,
+			wantWarnings:       []search.Warning{search.WarningMissingCitations},
+		},
+		{
+			name: "invalid",
+			citationData: `data: {"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","url":"javascript:alert(1)","title":"unsafe"}}
+
+data: {"type":"response.output_text.annotation.added","annotation":{"type":"url_citation","url":" https://whitespace.example.test/ ","title":"not absolute"}}
+
+`,
+			completedCitations: `[42]`,
+			wantWarnings: []search.Warning{
+				search.WarningInvalidCitationsIgnored,
+				search.WarningMissingCitations,
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := strings.NewReader(`data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","status":"completed","name":"x_keyword_search"}}
+
+` + test.citationData + `data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"X answer."}]}],"citations":` + test.completedCitations + `}}
+
+data: [DONE]
+
+`)
+
+			response, searchErr := normalize.Normalize(context.Background(), search.Request{Type: search.TypeX, Model: "m"}, body)
+			if searchErr != nil {
+				t.Fatalf("Normalize() error = %v", searchErr)
+			}
+			if len(response.Sources) != 0 {
+				t.Fatalf("sources = %#v, want none", response.Sources)
+			}
+			if !sameWarnings(response.Warnings, test.wantWarnings) {
+				t.Fatalf("warnings = %#v, want %#v", response.Warnings, test.wantWarnings)
+			}
+		})
+	}
+}
+
+func TestNormalizeXRequiresOneTerminalCompletionAndMatchingEvidence(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		code search.ErrorCode
+	}{
+		{
+			name: "absent evidence",
+			body: `data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"answer"}]}]}}
+
+data: [DONE]
+
+`,
+			code: search.ErrorSearchNotPerformed,
+		},
+		{
+			name: "wrong tool type",
+			body: `data: {"type":"response.output_item.done","item":{"type":"web_search_call","status":"completed"}}
+
+data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"answer"}]}]}}
+
+data: [DONE]
+
+`,
+			code: search.ErrorSearchNotPerformed,
+		},
+		{
+			name: "custom tool outside x namespace",
+			body: `data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","status":"completed","name":"web_search"}}
+
+data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"answer"}]}]}}
+
+data: [DONE]
+
+`,
+			code: search.ErrorSearchNotPerformed,
+		},
+		{
+			name: "custom tool incomplete",
+			body: `data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","status":"in_progress","name":"x_keyword_search"}}
+
+data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"answer"}]}]}}
+
+data: [DONE]
+
+`,
+			code: search.ErrorSearchNotPerformed,
+		},
+		{
+			name: "duplicate completion",
+			body: `data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","status":"completed","name":"x_keyword_search"}}
+
+data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"first"}]}]}}
+
+data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"second"}]}]}}
+
+`,
+			code: search.ErrorInvalidProviderResponse,
+		},
+		{
+			name: "completion is not terminal",
+			body: `data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","status":"completed","name":"x_keyword_search"}}
+
+data: {"type":"response.completed","response":{"output":[{"content":[{"type":"output_text","text":"answer"}]}]}}
+
+data: {"type":"response.output_text.delta","delta":"late"}
+
+`,
+			code: search.ErrorInvalidProviderResponse,
+		},
+		{
+			name: "empty answer",
+			body: `data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","status":"completed","name":"x_keyword_search"}}
+
+data: {"type":"response.completed","response":{"model":"grok-4.5-build","output":[]}}
+
+data: [DONE]
+
+`,
+			code: search.ErrorInvalidProviderResponse,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, searchErr := normalize.Normalize(context.Background(), search.Request{Type: search.TypeX, Model: "m"}, strings.NewReader(test.body))
+			if searchErr == nil {
+				t.Fatal("expected error")
+			}
+			if searchErr.Code != test.code {
+				t.Fatalf("code = %q, want %q", searchErr.Code, test.code)
+			}
+		})
+	}
+}
+
+func TestNormalizeXOmitsProviderModelWhenNotDifferent(t *testing.T) {
+	body := strings.NewReader(`data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","status":"completed","name":"x_keyword_search"}}
+
+data: {"type":"response.completed","response":{"model":"grok-4.5","output":[{"content":[{"type":"output_text","text":"answer"}]}]}}
+
+data: [DONE]
+
+`)
+
+	response, searchErr := normalize.Normalize(context.Background(), search.Request{Type: search.TypeX, Model: "grok-4.5"}, body)
+	if searchErr != nil {
+		t.Fatalf("Normalize() error = %v", searchErr)
+	}
+	if response.ProviderModel != "" {
+		t.Fatalf("provider_model = %q, want empty", response.ProviderModel)
+	}
+}
+
 func TestNormalizeDoneTextFallback(t *testing.T) {
 	body := strings.NewReader(`data: {"type":"response.web_search_call.completed"}
 
@@ -405,6 +606,18 @@ type errReader struct{ err error }
 func (r *errReader) Read([]byte) (int, error) { return 0, r.err }
 
 func sameWarnings(got, want []search.Warning) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameSources(got, want []search.Source) bool {
 	if len(got) != len(want) {
 		return false
 	}

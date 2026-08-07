@@ -47,7 +47,7 @@ func TestBinaryProcessContractIsOfflineAndFailClosed(t *testing.T) {
 		}
 	})
 
-	t.Run("valid auth never reaches a network path", func(t *testing.T) {
+	t.Run("expired auth is rejected locally without network", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "auth.json")
 		store := map[string]any{
 			"production": map[string]any{
@@ -55,8 +55,8 @@ func TestBinaryProcessContractIsOfflineAndFailClosed(t *testing.T) {
 				"refresh_token": "BINARY_TEST_REFRESH_SENTINEL_DO_NOT_USE",
 				"auth_mode":     "oidc",
 				"oidc_issuer":   "https://auth.x.ai",
-				"create_time":   time.Now().Add(-time.Hour).Format(time.RFC3339),
-				"expires_at":    time.Now().Add(time.Hour).Format(time.RFC3339),
+				"create_time":   time.Now().Add(-2 * time.Hour).Format(time.RFC3339),
+				"expires_at":    time.Now().Add(-time.Minute).Format(time.RFC3339),
 			},
 		}
 		data, err := json.Marshal(store)
@@ -68,7 +68,7 @@ func TestBinaryProcessContractIsOfflineAndFailClosed(t *testing.T) {
 		}
 
 		exitCode, stdout, stderr := runBinary(t, binaryPath, "", "x", "--auth-file", path, "query")
-		if exitCode != 70 || !strings.Contains(stdout, `"code":"internal_error"`) || stderr != "" {
+		if exitCode != 3 || !strings.Contains(stdout, `"code":"auth_expired"`) || stderr != "" {
 			t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 		}
 		for _, forbidden := range []string{"BINARY_TEST_ACCESS_SENTINEL_DO_NOT_USE", "BINARY_TEST_REFRESH_SENTINEL_DO_NOT_USE", "Authorization", path} {

@@ -78,9 +78,6 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 		return writeSearchError(stdout, loadErr)
 	}
 
-	if args[0] != string(search.TypeWeb) {
-		return writeSearchError(stdout, search.NewError(search.ErrorInternal))
-	}
 	if runtime.Search == nil {
 		version := runtime.Version
 		runtime.Search = func(ctx context.Context, request search.Request, credential auth.Credential) (search.Response, *search.Error) {
@@ -91,7 +88,7 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	response, searchErr := runtime.Search(ctx, search.Request{
-		Type:  search.TypeWeb,
+		Type:  search.Type(args[0]),
 		Query: query,
 		Model: "grok-4.5",
 	}, credential)
