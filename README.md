@@ -4,34 +4,33 @@ Agent-friendly CLI for Grok-powered web and X search.
 
 > [!IMPORTANT]
 > This is an unofficial, experimental project. It is not affiliated with or
-> endorsed by xAI.
+> endorsed by xAI. It reuses a private Grok Build login at the owner's risk.
+> xAI has not authorized this integration, and a technically successful request
+> is **not** authorization.
 
 ## Status
 
-V1 product and technical design is complete; no executable has been implemented
-yet. See the [V1 specification](docs/spec/v1.md).
+V1 is implemented for private, repository-owner use at the owner's risk. There
+is no distributed binary yet. See the [V1 specification](docs/spec/v1.md).
 
-V1 is approved only for private, repository-owner use at the owner's risk. xAI
-has not authorized this integration, and public distribution remains blocked.
+Public distribution, Homebrew publication, and shared-service operation remain
+blocked until xAI gives this project retained written authorization. Building
+or running it successfully does not unlock any form of distribution.
 
-## Initial scope
+## Install
 
-- Expose focused `web` and `x` search commands.
-- Return stable, machine-readable JSON for coding agents and scripts.
-- Reuse an existing Grok Build login from `~/.grok/auth.json` without copying,
-  refreshing, or rewriting credentials in the first version.
-- Provide a small skill that teaches supported agents when and how to invoke the
-  CLI.
+There is no public release artifact. The V1 spec permits private CI to build
+artifacts but forbids publishing them, so installation is a placeholder for now:
 
-## Non-goals for the first version
+```sh
+git clone <this repo> && cd grok-search-cli
+go build -o grok-search ./cmd/grok-search
+```
 
-- A general Grok chat client.
-- An OpenAI-compatible proxy.
-- An MCP server.
-- A second OAuth login or credential store.
-- Automatic mutation or refresh of Grok Build credentials.
+This produces a private binary for the owner's own machine. Do not redistribute
+the built binary or operate it as a shared service.
 
-## Authentication direction
+## Authentication
 
 Users authenticate with the official Grok Build CLI:
 
@@ -39,15 +38,215 @@ Users authenticate with the official Grok Build CLI:
 grok login
 ```
 
-The search CLI will treat Grok Build's credential file as read-only. Missing,
-unreadable, locally expired, or provider-rejected authentication will produce
-evidence-bounded typed errors. Applicable errors direct the user to `grok login`;
-the search CLI never starts that flow itself.
+The search CLI treats Grok Build's credential store
+(`${GROK_HOME:-$HOME/.grok}/auth.json`) as **read-only** input. It never logs in,
+refreshes, rotates, copies, or rewrites credentials, and it never starts a login
+flow itself.
+
+Missing, unreadable, insecure, malformed, locally expired, or provider-rejected
+credentials produce typed errors (exit `3`). The error message directs the user
+to run `grok login`. An **agent must request explicit permission before running
+`grok login`** on a user's behalf; the search CLI only tells the user to do so.
+
+## Usage
+
+```text
+grok-search web [common flags] [web flags] [query]
+grok-search x   [common flags] [x flags]   [query]
+grok-search help
+grok-search version
+```
+
+### help and version
+
+`help`, `--help`, and `-h` print human-readable usage text and exit `0`.
+`version` and `--version` print `grok-search <version>` and exit `0`. These are
+the only non-search commands.
+
+### Query input: stdin or positional
+
+Prefer piping arbitrary queries through stdin to avoid shell-escaping hazards:
+
+```sh
+echo "Find the official xAI documentation." | grok-search web
+```
+
+A single positional argument also works:
+
+```sh
+grok-search web "Find the official xAI documentation."
+```
+
+Rules (verified against the implementation):
+
+- If stdin is not a terminal, it is read first (up to 64 KiB).
+- Non-empty stdin **and** a positional query together is `usage_error` (exit 2).
+- Empty non-terminal stdin is treated as absent; the positional query is then used.
+- With a terminal stdin, exactly one positional query is required.
+- Invalid UTF-8, a query of only whitespace, or exceeding 64 KiB is `usage_error`.
+- For stdin only, one trailing LF (and an optional preceding CR) is removed; all
+  other bytes are preserved. The preserved query is what is sent upstream.
+
+### web and x
+
+`web` searches current public web information; `x` searches X posts. Each
+invocation performs exactly one search and emits exactly one JSON object.
+
+### Common options
+
+| Option | Contract |
+| --- | --- |
+| `--auth-file <path>` | Read credentials from this path instead of `${GROK_HOME:-$HOME/.grok}/auth.json`; the same read-only checks apply. |
+| `--timeout <duration>` | Total deadline; default `90s`, valid from `1s` through `180s`. |
+| `--max-output-tokens <n>` | Provider output bound; default `1024`, valid from `128` through `4096`. |
+| `--verbose` | Write sanitized, non-contractual diagnostics to stderr only. |
+
+### --model
+
+`--model <id>` overrides the default `grok-4.5`. The model ID is treated as
+opaque: valid UTF-8, 1–256 bytes, no control or whitespace characters. It is
+sent once and never silently swapped; the CLI never falls back to another model.
+The returned `model` is always the requested ID. An explicit empty value is
+`usage_error`.
+
+### Filters
+
+Web filters (`--allow-domain`, `--exclude-domain`) and X filters
+(`--allow-handle`, `--exclude-handle`) are mutually exclusive within each set.
+
+| Surface | Flag | Limit |
+| --- | --- | --- |
+| web | repeatable `--allow-domain <domain>` / `--exclude-domain <domain>` | 5 unique values |
+| x | repeatable `--allow-handle <handle>` / `--exclude-handle <handle>` | 20 unique values |
+| x | `--from <YYYY-MM-DD>`, `--to <YYYY-MM-DD>` | `from` must not be later than `to` |
+
+Domains are ASCII hostnames (no scheme, port, path, or wildcard), lowercased and
+deduplicated. Handles omit `@` and contain no whitespace. Use filters only when
+the user's request requires them.
+
+## Output
+
+Search commands write exactly one compact JSON object followed by a newline to
+**stdout**, on both success and expected failure. Diagnostics go only to stderr.
+
+### Success
+
+```json
+{
+  "schema_version": 1,
+  "type": "web",
+  "query": "Find the official xAI documentation.",
+  "model": "grok-4.5",
+  "provider_model": "grok-4.5-build",
+  "answer": "The documentation is available at the cited URL.",
+  "sources": [
+    {"url": "https://docs.x.ai/", "title": "xAI Documentation"}
+  ],
+  "warnings": []
+}
+```
+
+- `schema_version`, `type`, `query`, `model`, `answer`, `sources`, and
+  `warnings` are always present.
+- `provider_model` appears only when the provider reported a completed-response
+  model that differs from the requested `model`. That is disclosure, not a
+  client-side fallback.
+- `sources` are provider-supplied URL **citations** attached to the answer, not
+  ranked search hits. They are deduplicated by exact URL in first-citation order;
+  that order is not relevance rank. `title` is omitted when absent.
+- Agents should consume `answer`, `sources`, and `warnings`, and treat sources as
+  citations rather than ranked results.
+
+### Warnings
+
+`warnings` is always an array. A warning describes **degraded evidence in an
+otherwise usable response** — not an error. V1 uses a closed set:
+
+| Code | Meaning |
+| --- | --- |
+| `invalid_citations_ignored` | Some provider-supplied citations were in an unsupported shape and were ignored. The remaining answer is still valid. |
+| `missing_citations` | The answer has no supporting citations. The response succeeds with `sources: []`. |
+
+When both apply, they appear in the order shown. A response with no citations
+left after ignoring invalid ones is a success with `sources: []` plus
+`missing_citations`.
+
+### Errors
+
+Expected failures write a JSON error object and a non-zero exit status:
+
+```json
+{
+  "schema_version": 1,
+  "error": {
+    "code": "rate_limited",
+    "message": "The provider rate-limited the search request.",
+    "retryable": true,
+    "http_status": 429,
+    "retry_after_seconds": 30,
+    "request_id": "safe-request-id"
+  }
+}
+```
+
+`code` and `message` are stable and client-owned. `retryable` says whether a
+caller *may* retry later; it does not mean the CLI already retried.
+`http_status`, `retry_after_seconds`, and `request_id` appear only when reliably
+observed and sanitized. The CLI never emits provider bodies or mutable provider
+messages on stdout.
+
+## Exit codes
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | Search success, `help`, or `version`. |
+| `2` | Local usage or input-validation failure (`usage_error`). |
+| `3` | Credential/authentication failure (missing, unreadable, insecure, invalid, expired, or rejected). |
+| `4` | Transport, provider, compatibility, response, or search failure. |
+| `70` | Sanitized unexpected internal failure. |
+
+## Diagnostics (--verbose)
+
+`--verbose` writes allowlisted, sanitized diagnostics to **stderr only**. It does
+not change stdout and does not affect the exit code. The diagnostics are a
+**non-contractual** debugging aid: a line carries only a phase name, elapsed
+time, a stable code, and narrow evidence such as HTTP status.
+
+They never contain the query, answer, citations, request or response bodies,
+headers, paths containing a username, or any credential material. Do not parse
+stderr as part of the contract; rely on the stdout JSON and the exit code.
+
+## Verifying without network
+
+Everything can be verified offline without calling the live xAI proxy. From a
+clone:
+
+```sh
+go test ./...
+go build -o grok-search ./cmd/grok-search
+```
+
+You can also exercise the local command surface with no credential and no
+network. Point `--auth-file` at a missing path so the command fails closed at the
+auth step regardless of whether a real `grok login` exists:
+
+```sh
+./grok-search help                                              # exit 0
+./grok-search version                                           # exit 0
+echo "x" | ./grok-search web --auth-file /tmp/no-such-cred      # exit 3 (auth_missing)
+```
+
+Each line is fully offline: `help` and `version` never touch auth or network,
+and the `web` line fails at credential loading (exit `3`) before any request is
+made. They contain no real credentials. A search that reaches the provider
+requires a valid `grok login` and is an explicit, owner-risk manual action — not
+part of these offline checks.
 
 ## Security
 
-Never commit or share `~/.grok/auth.json`, OAuth tokens, callback URLs, API keys,
-or captured request headers. See [SECURITY.md](SECURITY.md).
+Never commit or share `~/.grok/auth.json`, OAuth tokens, callback URLs, API
+keys, or captured request headers. The CLI never prints, copies, or exposes
+credentials. See [SECURITY.md](SECURITY.md).
 
 ## License
 

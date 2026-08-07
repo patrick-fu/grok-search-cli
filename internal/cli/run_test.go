@@ -402,6 +402,70 @@ func TestFiltersNormalizeAndForwardWithRequest(t *testing.T) {
 	}
 }
 
+func TestDocumentedStdinInvocationsAndResponseParsingStayOffline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		args  []string
+		check func(t *testing.T, request search.Request)
+	}{
+		{
+			name: "web with requested model and domain",
+			args: []string{"web", "--model", "grok-4.5", "--allow-domain", "docs.example.test"},
+			check: func(t *testing.T, request search.Request) {
+				if request.Type != search.TypeWeb || request.Query != "find current docs" || request.WebFilters == nil || strings.Join(request.WebFilters.AllowedDomains, ",") != "docs.example.test" {
+					t.Fatalf("request = %#v", request)
+				}
+			},
+		},
+		{
+			name: "x with handle and date",
+			args: []string{"x", "--allow-handle", "OpenAI", "--from", "2026-02-03"},
+			check: func(t *testing.T, request search.Request) {
+				if request.Type != search.TypeX || request.Query != "find current posts" || request.XFilters == nil || strings.Join(request.XFilters.AllowedHandles, ",") != "OpenAI" || request.XFilters.FromDate != "2026-02-03" {
+					t.Fatalf("request = %#v", request)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+				return auth.Credential{}, nil
+			})
+			runtime.Search = func(_ context.Context, request search.Request, _ auth.Credential) (search.Response, *search.Error) {
+				test.check(t, request)
+				return search.Response{
+					SchemaVersion: search.SchemaVersion,
+					Type:          request.Type,
+					Query:         request.Query,
+					Model:         request.Model,
+					Answer:        "offline answer",
+					Sources:       []search.Source{{URL: "https://docs.example.test/"}},
+					Warnings:      []search.Warning{search.WarningInvalidCitationsIgnored},
+				}, nil
+			}
+			exitCode, stdout, stderr := run(runtime, test.args, map[string]string{
+				"web with requested model and domain": "find current docs",
+				"x with handle and date":              "find current posts",
+			}[test.name])
+			if exitCode != 0 || stderr != "" {
+				t.Fatalf("exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
+			}
+			var result struct {
+				Answer   string           `json:"answer"`
+				Sources  []search.Source  `json:"sources"`
+				Warnings []search.Warning `json:"warnings"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &result); err != nil || result.Answer != "offline answer" || len(result.Sources) != 1 || result.Sources[0].URL != "https://docs.example.test/" || len(result.Warnings) != 1 || result.Warnings[0] != search.WarningInvalidCitationsIgnored {
+				t.Fatalf("result=%#v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestVerboseDiagnosticsAreAllowlistedAndNeverChangeStdout(t *testing.T) {
 	t.Parallel()
 
