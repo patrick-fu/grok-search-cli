@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/patrick-fu/grok-search-cli/internal/auth"
@@ -28,6 +29,11 @@ const (
 	maxMaxOutputTokens     = 4096
 )
 
+const (
+	defaultModel  = "grok-4.5"
+	maxModelBytes = 256
+)
+
 type Runtime struct {
 	Version         string
 	StdinIsTerminal bool
@@ -38,6 +44,7 @@ type Runtime struct {
 
 type searchOptions struct {
 	authPath        string
+	model           string
 	positional      []string
 	wantsHelp       bool
 	timeout         time.Duration
@@ -47,6 +54,7 @@ type searchOptions struct {
 
 func defaultSearchOptions() searchOptions {
 	return searchOptions{
+		model:           defaultModel,
 		timeout:         defaultTimeout,
 		maxOutputTokens: defaultMaxOutputTokens,
 	}
@@ -122,7 +130,7 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 	response, searchErr := runtime.Search(ctx, search.Request{
 		Type:            search.Type(args[0]),
 		Query:           query,
-		Model:           "grok-4.5",
+		Model:           options.model,
 		MaxOutputTokens: options.maxOutputTokens,
 	}, credential)
 	if searchErr != nil {
@@ -139,6 +147,7 @@ func parseSearchArgs(args []string) (searchOptions, bool) {
 	seenTimeout := false
 	seenMaxOutputTokens := false
 	seenVerbose := false
+	seenModel := false
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
 		switch {
@@ -206,6 +215,23 @@ func parseSearchArgs(args []string) (searchOptions, bool) {
 			}
 			seenMaxOutputTokens = true
 			options.maxOutputTokens = tokens
+		case argument == "--model":
+			if seenModel || index+1 >= len(args) || !validModel(args[index+1]) {
+				return searchOptions{}, false
+			}
+			seenModel = true
+			index++
+			options.model = args[index]
+		case strings.HasPrefix(argument, "--model="):
+			if seenModel {
+				return searchOptions{}, false
+			}
+			model := strings.TrimPrefix(argument, "--model=")
+			if !validModel(model) {
+				return searchOptions{}, false
+			}
+			seenModel = true
+			options.model = model
 		case argument == "--verbose":
 			if seenVerbose {
 				return searchOptions{}, false
@@ -244,6 +270,18 @@ func parseMaxOutputTokens(value string) (int, bool) {
 		return 0, false
 	}
 	return tokens, true
+}
+
+func validModel(value string) bool {
+	if value == "" || len(value) > maxModelBytes || !utf8.ValidString(value) {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) || unicode.IsSpace(character) {
+			return false
+		}
+	}
+	return true
 }
 
 // emitDiagnostic writes one allowlisted diagnostic line to stderr. A line
@@ -364,8 +402,8 @@ func writeHuman(stdout io.Writer, value string) int {
 const helpText = `grok-search provides agent-friendly Grok Web and X search.
 
 Usage:
-  grok-search web [--auth-file <path>] [--timeout <duration>] [--max-output-tokens <n>] [--verbose] [query]
-  grok-search x [--auth-file <path>] [--timeout <duration>] [--max-output-tokens <n>] [--verbose] [query]
+  grok-search web [--model <id>] [--auth-file <path>] [--timeout <duration>] [--max-output-tokens <n>] [--verbose] [query]
+  grok-search x [--model <id>] [--auth-file <path>] [--timeout <duration>] [--max-output-tokens <n>] [--verbose] [query]
   grok-search help
   grok-search version
 `

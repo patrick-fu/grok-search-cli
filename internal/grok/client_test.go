@@ -282,6 +282,129 @@ func TestSearch_Non200MapsProviderUnavailable(t *testing.T) {
 	}
 }
 
+func TestSearch_404CatalogDiagnosesOnlyExplicitModelOmission(t *testing.T) {
+	tests := []struct {
+		name          string
+		requestType   search.Type
+		catalogStatus int
+		catalogBody   string
+		wantCode      search.ErrorCode
+	}{
+		{
+			name:          "web omission",
+			requestType:   search.TypeWeb,
+			catalogStatus: http.StatusOK,
+			catalogBody:   `{"data":[{"id":"another-model"}]}`,
+			wantCode:      search.ErrorUnsupportedModel,
+		},
+		{
+			name:          "x omission",
+			requestType:   search.TypeX,
+			catalogStatus: http.StatusOK,
+			catalogBody:   `{"data":[{"id":"another-model"}]}`,
+			wantCode:      search.ErrorUnsupportedModel,
+		},
+		{
+			name:          "exact presence",
+			requestType:   search.TypeWeb,
+			catalogStatus: http.StatusOK,
+			catalogBody:   `{"data":[{"id":"future-model"}]}`,
+			wantCode:      search.ErrorProvider,
+		},
+		{
+			name:          "malformed",
+			requestType:   search.TypeWeb,
+			catalogStatus: http.StatusOK,
+			catalogBody:   `{`,
+			wantCode:      search.ErrorProvider,
+		},
+		{
+			name:          "empty",
+			requestType:   search.TypeWeb,
+			catalogStatus: http.StatusOK,
+			catalogBody:   `{"data":[]}`,
+			wantCode:      search.ErrorProvider,
+		},
+		{
+			name:          "non 2xx",
+			requestType:   search.TypeWeb,
+			catalogStatus: http.StatusServiceUnavailable,
+			catalogBody:   `provider secret`,
+			wantCode:      search.ErrorProvider,
+		},
+		{
+			name:          "over limit",
+			requestType:   search.TypeWeb,
+			catalogStatus: http.StatusOK,
+			catalogBody:   strings.Repeat("x", catalogLimit+1),
+			wantCode:      search.ErrorProvider,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rt := &scriptedRoundTripper{results: []roundTripResult{
+				{status: http.StatusNotFound, header: http.Header{"X-Request-Id": {"safe-404"}}},
+				{status: test.catalogStatus, header: http.Header{"Content-Type": {"application/json"}}, text: test.catalogBody},
+			}}
+			_, err := NewClient("tok", "1.0", rt).Search(context.Background(), search.Request{
+				Type: test.requestType, Query: "q", Model: "future-model",
+			})
+			if err == nil || err.Code != test.wantCode {
+				t.Fatalf("error = %#v, want %s", err, test.wantCode)
+			}
+			if err.HTTPStatus != http.StatusNotFound || err.RequestID != "safe-404" {
+				t.Fatalf("metadata = %#v, want original 404 metadata", err)
+			}
+			if len(rt.methods) != 2 || rt.methods[0] != http.MethodPost || rt.methods[1] != http.MethodGet {
+				t.Fatalf("methods = %v, want POST then GET", rt.methods)
+			}
+			if rt.urls[0] != endpointURL || rt.urls[1] != modelsEndpointURL {
+				t.Fatalf("routes = %v", rt.urls)
+			}
+			var body requestBody
+			if err := json.Unmarshal(rt.bodies[0], &body); err != nil || body.Model != "future-model" {
+				t.Fatalf("inference body=%q model=%q err=%v", rt.bodies[0], body.Model, err)
+			}
+			assertCatalogHeaders(t, rt.headers[1])
+		})
+	}
+}
+
+func TestSearch_NeverPreflightsCatalog(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusBadRequest, http.StatusServiceUnavailable} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			rt := &scriptedRoundTripper{results: []roundTripResult{{
+				status: status, header: http.Header{"Content-Type": {"text/event-stream"}}, text: validSSE("ok"),
+			}}}
+			_, _ = NewClient("tok", "1.0", rt).Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q", Model: "future-model"})
+			if len(rt.methods) != 1 || rt.urls[0] != endpointURL {
+				t.Fatalf("unexpected catalog request: methods=%v routes=%v", rt.methods, rt.urls)
+			}
+		})
+	}
+}
+
+func assertCatalogHeaders(t *testing.T, headers http.Header) {
+	t.Helper()
+	want := map[string]string{
+		"Authorization":            "Bearer tok",
+		"Accept":                   "application/json",
+		"X-Grok-Client-Mode":       "headless",
+		"X-Grok-Client-Identifier": "grok-search-cli",
+		"X-Grok-Client-Version":    "0.2.117+grok-search-cli.1.0",
+		"User-Agent":               "grok-search-cli/1.0",
+	}
+	for name, value := range want {
+		if got := headers.Get(name); got != value {
+			t.Errorf("header %s = %q, want %q", name, got, value)
+		}
+	}
+	if got := headers.Get("Content-Type"); got != "" {
+		t.Errorf("Content-Type = %q, want absent", got)
+	}
+}
+
 func TestSearch_WrongContentTypeReturnsInvalidProviderResponse(t *testing.T) {
 	rt := &fakeRoundTripper{
 		status: 200,
@@ -509,12 +632,19 @@ type scriptedRoundTripper struct {
 	results []roundTripResult
 	bodies  [][]byte
 	headers []http.Header
+	methods []string
+	urls    []string
 }
 
 func (transport *scriptedRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	body, _ := io.ReadAll(req.Body)
+	var body []byte
+	if req.Body != nil {
+		body, _ = io.ReadAll(req.Body)
+	}
 	transport.bodies = append(transport.bodies, body)
 	transport.headers = append(transport.headers, req.Header.Clone())
+	transport.methods = append(transport.methods, req.Method)
+	transport.urls = append(transport.urls, req.URL.String())
 	result := transport.results[len(transport.bodies)-1]
 	if result.err != nil {
 		return nil, result.err

@@ -242,6 +242,64 @@ func TestCommonScalarFlagsAreForwardedToSearch(t *testing.T) {
 	}
 }
 
+func TestModelOptionIsOpaqueAndValidatedBeforeCredentials(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name      string
+		args      []string
+		wantModel string
+	}{
+		{name: "default web", args: []string{"web", "query"}, wantModel: "grok-4.5"},
+		{name: "explicit future x", args: []string{"x", "--model", "future-model:beta.1", "query"}, wantModel: "future-model:beta.1"},
+		{name: "preserves exact spelling", args: []string{"web", "--model=Grok.Future_1", "query"}, wantModel: "Grok.Future_1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+				return auth.Credential{}, nil
+			})
+			runtime.StdinIsTerminal = true
+			runtime.Search = func(_ context.Context, request search.Request, _ auth.Credential) (search.Response, *search.Error) {
+				if request.Model != test.wantModel {
+					t.Fatalf("model = %q, want %q", request.Model, test.wantModel)
+				}
+				return search.Response{SchemaVersion: search.SchemaVersion, Type: request.Type, Query: request.Query, Model: request.Model, Sources: []search.Source{}, Warnings: []search.Warning{}, Answer: "ok"}, nil
+			}
+			if exitCode, _, stderr := run(runtime, test.args, ""); exitCode != 0 || stderr != "" {
+				t.Fatalf("exit=%d stderr=%q", exitCode, stderr)
+			}
+		})
+	}
+
+	invalidModels := []struct {
+		name string
+		args []string
+	}{
+		{name: "missing", args: []string{"web", "--model"}},
+		{name: "empty equals", args: []string{"web", "--model=", "query"}},
+		{name: "duplicate", args: []string{"web", "--model", "one", "--model=two", "query"}},
+		{name: "whitespace", args: []string{"web", "--model", "model name", "query"}},
+		{name: "unicode whitespace", args: []string{"web", "--model=model\u00a0name", "query"}},
+		{name: "control", args: []string{"web", "--model=model\nname", "query"}},
+		{name: "invalid utf8", args: []string{"web", "--model=" + string([]byte{0xff}), "query"}},
+		{name: "too long", args: []string{"web", "--model=" + strings.Repeat("a", 257), "query"}},
+	}
+	for _, test := range invalidModels {
+		t.Run("invalid/"+test.name, func(t *testing.T) {
+			loaded := false
+			runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+				loaded = true
+				return auth.Credential{}, nil
+			})
+			runtime.StdinIsTerminal = true
+			exitCode, stdout, stderr := run(runtime, test.args, "")
+			if exitCode != 2 || stdout != usageJSON || stderr != "" || loaded {
+				t.Fatalf("exit=%d stdout=%q stderr=%q loaded=%t", exitCode, stdout, stderr, loaded)
+			}
+		})
+	}
+}
+
 func TestVerboseDiagnosticsAreAllowlistedAndNeverChangeStdout(t *testing.T) {
 	t.Parallel()
 
