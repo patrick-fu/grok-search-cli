@@ -491,6 +491,78 @@ func TestSecureCredentialStoreSupportsOfflineWebSearchWithoutLeakingOrChangingSt
 	}
 }
 
+func TestSearchErrorExitContractIsOfflineAndDoesNotLeak(t *testing.T) {
+	tests := []struct {
+		name      string
+		searchErr *search.Error
+		wantExit  int
+		wantJSON  string
+	}{
+		{
+			name: "rate limited carries all verified metadata",
+			searchErr: search.NewError(search.ErrorRateLimited).
+				WithHTTPStatus(429).
+				WithRetryAfterSeconds(0).
+				WithRequestID("safe-request-id"),
+			wantExit: 4,
+			wantJSON: "{\"schema_version\":1,\"error\":{\"code\":\"rate_limited\",\"message\":\"The provider rate-limited the search request.\",\"retryable\":true,\"http_status\":429,\"retry_after_seconds\":0,\"request_id\":\"safe-request-id\"}}\n",
+		},
+		{
+			name:      "auth rejected exits three",
+			searchErr: search.NewError(search.ErrorAuthRejected).WithHTTPStatus(401),
+			wantExit:  3,
+			wantJSON:  "{\"schema_version\":1,\"error\":{\"code\":\"auth_rejected\",\"message\":\"The Grok credential was rejected. Run `grok login`.\",\"retryable\":false,\"http_status\":401}}\n",
+		},
+		{
+			name: "mutable error is rebuilt before output",
+			searchErr: &search.Error{
+				Code:      search.ErrorProvider,
+				Message:   "RAW_PROVIDER_BODY_SENTINEL",
+				Retryable: true,
+			},
+			wantExit: 4,
+			wantJSON: "{\"schema_version\":1,\"error\":{\"code\":\"provider_error\",\"message\":\"The provider could not complete the search request.\",\"retryable\":false}}\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			path := writeStore(t, directory, "auth.json", validStore(t, "oidc", fixedNow.Add(-time.Hour), fixedNow.Add(time.Hour).Format(time.RFC3339)), 0o600)
+
+			const query = "SENTINEL_QUERY_DO_NOT_PRINT"
+			runtime := cli.DefaultRuntime()
+			runtime.Now = func() time.Time { return fixedNow }
+			runtime.StdinIsTerminal = true
+			runtime.Search = func(_ context.Context, request search.Request, credential auth.Credential) (search.Response, *search.Error) {
+				if credential.AccessToken != "TEST_ONLY_ACCESS_SENTINEL_DO_NOT_USE" {
+					t.Fatalf("unexpected credential")
+				}
+				if request.Query != query {
+					t.Fatalf("query = %q, want %q", request.Query, query)
+				}
+				return search.Response{}, test.searchErr
+			}
+
+			exitCode, stdout, stderr := run(runtime, []string{"web", "--auth-file", path, query}, "")
+			if exitCode != test.wantExit {
+				t.Fatalf("exit=%d stdout=%q stderr=%q, want exit %d", exitCode, stdout, stderr, test.wantExit)
+			}
+			if stdout != test.wantJSON {
+				t.Fatalf("stdout = %q, want %q", stdout, test.wantJSON)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			for _, forbidden := range []string{"TEST_ONLY_ACCESS_SENTINEL_DO_NOT_USE", "TEST_ONLY_REFRESH_SENTINEL_DO_NOT_USE", "Authorization", path, query, "RAW_PROVIDER_BODY_SENTINEL"} {
+				if strings.Contains(stdout, forbidden) || strings.Contains(stderr, forbidden) {
+					t.Fatalf("output leaked %q", forbidden)
+				}
+			}
+		})
+	}
+}
+
 func testRuntime(loader func(string, time.Time) (auth.Credential, *search.Error)) cli.Runtime {
 	return cli.Runtime{
 		Version:        "test",

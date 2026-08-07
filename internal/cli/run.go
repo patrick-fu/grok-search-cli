@@ -48,38 +48,38 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 		return writeHuman(stdout, fmt.Sprintf("grok-search %s\n", runtime.Version))
 	}
 	if len(args) == 0 || (args[0] != "web" && args[0] != "x") {
-		return writeSearchError(stdout, search.NewError(search.ErrorUsage), 2)
+		return writeSearchError(stdout, search.NewError(search.ErrorUsage))
 	}
 
 	authPath, positional, wantsHelp, parseOK := parseSearchArgs(args[1:])
 	if !parseOK {
-		return writeSearchError(stdout, search.NewError(search.ErrorUsage), 2)
+		return writeSearchError(stdout, search.NewError(search.ErrorUsage))
 	}
 	if wantsHelp {
 		return writeHuman(stdout, helpText)
 	}
 	query, ok := readQuery(positional, stdin, runtime.StdinIsTerminal)
 	if !ok {
-		return writeSearchError(stdout, search.NewError(search.ErrorUsage), 2)
+		return writeSearchError(stdout, search.NewError(search.ErrorUsage))
 	}
 
 	if authPath == "" {
 		var ok bool
 		authPath, ok = defaultAuthPath()
 		if !ok {
-			return writeSearchError(stdout, search.NewError(search.ErrorAuthMissing), 3)
+			return writeSearchError(stdout, search.NewError(search.ErrorAuthMissing))
 		}
 	}
 	if runtime.Now == nil || runtime.LoadCredential == nil {
-		return writeSearchError(stdout, search.NewError(search.ErrorInternal), 70)
+		return writeSearchError(stdout, search.NewError(search.ErrorInternal))
 	}
 	credential, loadErr := runtime.LoadCredential(authPath, runtime.Now())
 	if loadErr != nil {
-		return writeSearchError(stdout, loadErr, 3)
+		return writeSearchError(stdout, loadErr)
 	}
 
 	if args[0] != string(search.TypeWeb) {
-		return writeSearchError(stdout, search.NewError(search.ErrorInternal), 70)
+		return writeSearchError(stdout, search.NewError(search.ErrorInternal))
 	}
 	if runtime.Search == nil {
 		version := runtime.Version
@@ -96,7 +96,7 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 		Model: "grok-4.5",
 	}, credential)
 	if searchErr != nil {
-		return writeSearchError(stdout, searchErr, searchErr.ExitCode())
+		return writeSearchError(stdout, searchErr)
 	}
 	return writeSearchResponse(stdout, response)
 }
@@ -199,13 +199,14 @@ type errorEnvelope struct {
 	Error         *search.Error `json:"error"`
 }
 
-func writeSearchError(stdout io.Writer, searchErr *search.Error, exitCode int) int {
+func writeSearchError(stdout io.Writer, searchErr *search.Error) int {
+	searchErr = searchErr.Sanitized()
 	encoder := json.NewEncoder(stdout)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(errorEnvelope{SchemaVersion: 1, Error: searchErr}); err != nil {
 		return 70
 	}
-	return exitCode
+	return searchErr.ExitCode()
 }
 
 func writeSearchResponse(stdout io.Writer, response search.Response) int {

@@ -7,8 +7,10 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/patrick-fu/grok-search-cli/internal/normalize"
@@ -78,20 +80,115 @@ func (c *client) Search(ctx context.Context, request search.Request) (search.Res
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return search.Response{}, search.NewError(search.ErrorInternal)
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return search.Response{}, search.NewError(search.ErrorRequestTimeout)
+		}
+		return search.Response{}, search.NewError(search.ErrorTransport)
+	}
+	if resp == nil {
+		return search.Response{}, search.NewError(search.ErrorTransport)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return search.Response{}, search.NewError(search.ErrorInternal)
+		return search.Response{}, classifyHTTPError(resp)
 	}
 
-	ct := resp.Header.Get("Content-Type")
+	ct := headerValue(resp.Header, "Content-Type")
 	if !strings.HasPrefix(ct, "text/event-stream") {
-		return search.Response{}, search.NewError(search.ErrorInternal)
+		errorValue := search.NewError(search.ErrorInvalidProviderResponse).WithHTTPStatus(resp.StatusCode)
+		if requestID := safeRequestID(headerValue(resp.Header, "X-Request-Id")); requestID != "" {
+			errorValue.WithRequestID(requestID)
+		}
+		return search.Response{}, errorValue
 	}
 
-	return normalize.Normalize(ctx, request, resp.Body)
+	response, normalizedErr := normalize.Normalize(ctx, request, resp.Body)
+	if normalizedErr != nil {
+		normalizedErr.WithHTTPStatus(resp.StatusCode)
+		if requestID := safeRequestID(headerValue(resp.Header, "X-Request-Id")); requestID != "" {
+			normalizedErr.WithRequestID(requestID)
+		}
+	}
+	return response, normalizedErr
+}
+
+// classifyHTTPError maps only the trusted HTTP status and a small allowlist of
+// response metadata into the stable search error domain. Provider body and
+// mutable provider messages are deliberately never read.
+func classifyHTTPError(resp *http.Response) *search.Error {
+	status := resp.StatusCode
+	code := search.ErrorProvider
+	switch status {
+	case http.StatusUnauthorized:
+		code = search.ErrorAuthRejected
+	case http.StatusForbidden:
+		code = search.ErrorPermissionDenied
+	case http.StatusTooManyRequests:
+		code = search.ErrorRateLimited
+	case http.StatusBadRequest, http.StatusConflict, http.StatusUnprocessableEntity:
+		code = search.ErrorRequestRejected
+	case http.StatusRequestEntityTooLarge:
+		code = search.ErrorRequestTooLarge
+	case http.StatusUpgradeRequired:
+		code = search.ErrorClientIncompatible
+	case http.StatusRequestTimeout:
+		code = search.ErrorRequestTimeout
+	default:
+		if status >= 500 && status <= 599 {
+			code = search.ErrorProviderUnavailable
+		}
+	}
+
+	err := search.NewError(code).WithHTTPStatus(status)
+	if code == search.ErrorRateLimited {
+		if retryAfter, ok := parseRetryAfter(headerValue(resp.Header, "Retry-After")); ok {
+			err = err.WithRetryAfterSeconds(retryAfter)
+		}
+	}
+	if requestID := safeRequestID(headerValue(resp.Header, "X-Request-Id")); requestID != "" {
+		err = err.WithRequestID(requestID)
+	}
+	return err
+}
+
+func headerValue(header http.Header, name string) string {
+	for key, values := range header {
+		if strings.EqualFold(key, name) && len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
+}
+
+func parseRetryAfter(value string) (int, bool) {
+	if value == "" {
+		return 0, false
+	}
+	seconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, false
+	}
+	if seconds < 0 {
+		seconds = 0
+	} else if seconds > 3600 {
+		seconds = 3600
+	}
+	return seconds, true
+}
+
+func safeRequestID(value string) string {
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '.' || c == '_' || c == ':' || c == '-') {
+			return ""
+		}
+	}
+	return value
 }
 
 type requestBody struct {

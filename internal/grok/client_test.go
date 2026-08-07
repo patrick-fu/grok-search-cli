@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -175,43 +176,111 @@ func TestSearch_AcceptsAnySuccessfulSSEStatus(t *testing.T) {
 	}
 }
 
-func TestSearch_Non200ReturnsInternalError(t *testing.T) {
+func TestSearch_Non200MapsProviderUnavailable(t *testing.T) {
 	rt := &fakeRoundTripper{status: 500}
 	c := NewClient("tok", "1.0", rt)
 	_, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
 	if err == nil {
 		t.Fatal("expected error for 500")
 	}
-	if err.Code != search.ErrorInternal {
-		t.Errorf("code = %s, want internal_error", err.Code)
+	if err.Code != search.ErrorProviderUnavailable {
+		t.Errorf("code = %s, want provider_unavailable", err.Code)
 	}
 }
 
-func TestSearch_WrongContentTypeReturnsInternalError(t *testing.T) {
+func TestSearch_WrongContentTypeReturnsInvalidProviderResponse(t *testing.T) {
 	rt := &fakeRoundTripper{
 		status: 200,
-		header: http.Header{"Content-Type": {"application/json"}},
-		text:   "{}",
+		header: http.Header{
+			"Content-Type": {"application/json"},
+			"X-Request-Id": {"safe-request-id"},
+		},
+		text: "{}",
 	}
 	c := NewClient("tok", "1.0", rt)
 	_, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
 	if err == nil {
 		t.Fatal("expected error for wrong content-type")
 	}
-	if err.Code != search.ErrorInternal {
-		t.Errorf("code = %s, want internal_error", err.Code)
+	if err.Code != search.ErrorInvalidProviderResponse {
+		t.Errorf("code = %s, want invalid_provider_response", err.Code)
+	}
+	if err.HTTPStatus != http.StatusOK || err.RequestID != "safe-request-id" {
+		t.Errorf("metadata = %#v, want trusted status and request ID", err)
 	}
 }
 
-func TestSearch_TransportErrorReturnsInternalError(t *testing.T) {
+func TestSearch_TransportErrorReturnsTransportError(t *testing.T) {
 	rt := &errRoundTripper{}
 	c := NewClient("tok", "1.0", rt)
 	_, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
 	if err == nil {
 		t.Fatal("expected error for transport failure")
 	}
-	if err.Code != search.ErrorInternal {
-		t.Errorf("code = %s, want internal_error", err.Code)
+	if err.Code != search.ErrorTransport {
+		t.Errorf("code = %s, want transport_error", err.Code)
+	}
+}
+
+func TestSearch_HTTPStatusMappingAndMetadata(t *testing.T) {
+	cases := []struct {
+		status int
+		code   search.ErrorCode
+	}{
+		{http.StatusUnauthorized, search.ErrorAuthRejected},
+		{http.StatusForbidden, search.ErrorPermissionDenied},
+		{http.StatusTooManyRequests, search.ErrorRateLimited},
+		{http.StatusBadRequest, search.ErrorRequestRejected},
+		{http.StatusConflict, search.ErrorRequestRejected},
+		{http.StatusUnprocessableEntity, search.ErrorRequestRejected},
+		{http.StatusRequestEntityTooLarge, search.ErrorRequestTooLarge},
+		{http.StatusUpgradeRequired, search.ErrorClientIncompatible},
+		{http.StatusRequestTimeout, search.ErrorRequestTimeout},
+		{http.StatusNotFound, search.ErrorProvider},
+		{http.StatusInternalServerError, search.ErrorProviderUnavailable},
+		{http.StatusBadGateway, search.ErrorProviderUnavailable},
+		{http.StatusTeapot, search.ErrorProvider},
+	}
+	for _, tc := range cases {
+		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
+			body := "provider secret body"
+			header := http.Header{"Content-Type": {"text/plain"}, "X-REQUEST-ID": {"safe.id-1"}}
+			if tc.status == http.StatusTooManyRequests {
+				header.Set("Retry-After", "4001")
+			}
+			rt := &fakeRoundTripper{status: tc.status, header: header, text: body}
+			_, err := NewClient("tok", "1.0", rt).Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
+			if err == nil || err.Code != tc.code {
+				t.Fatalf("error = %#v, want %s", err, tc.code)
+			}
+			if err.HTTPStatus != tc.status {
+				t.Errorf("http_status = %d, want %d", err.HTTPStatus, tc.status)
+			}
+			if err.RequestID != "safe.id-1" {
+				t.Errorf("request_id = %q, want safe.id-1", err.RequestID)
+			}
+			if strings.Contains(err.Message, body) {
+				t.Error("provider body leaked into client-owned error message")
+			}
+			if tc.status == http.StatusTooManyRequests {
+				if err.RetryAfterSeconds == nil || *err.RetryAfterSeconds != 3600 {
+					t.Errorf("retry_after_seconds = %v, want 3600", err.RetryAfterSeconds)
+				}
+			}
+		})
+	}
+}
+
+func TestSearch_RequestIDAndRetryAfterSanitized(t *testing.T) {
+	longID := strings.Repeat("a", 129)
+	for _, id := range []string{"bad id", "中文", longID} {
+		rt := &fakeRoundTripper{status: http.StatusTooManyRequests, header: http.Header{
+			"X-Request-ID": {id}, "Retry-After": {"not-an-integer"},
+		}}
+		_, err := NewClient("tok", "1.0", rt).Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
+		if err == nil || err.RequestID != "" || err.RetryAfterSeconds != nil {
+			t.Fatalf("unsafe metadata retained: %#v", err)
+		}
 	}
 }
 

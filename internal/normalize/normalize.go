@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/url"
 	"strings"
@@ -16,7 +17,7 @@ import (
 )
 
 // Normalize reads one provider SSE response and returns only the stable search
-// domain result. It never include raw provider events or messages in errors.
+// domain result. It never includes raw provider events or messages in errors.
 func Normalize(ctx context.Context, request search.Request, body io.Reader) (search.Response, *search.Error) {
 	collector := sourceCollector{indexByURL: make(map[string]int)}
 	state := normalizationState{}
@@ -36,11 +37,17 @@ func Normalize(ctx context.Context, request search.Request, body io.Reader) (sea
 		return state.accept(request, event, &collector)
 	})
 	if err != nil {
-		return search.Response{}, search.NewError(search.ErrorInternal)
+		return handleParseError(err)
 	}
 
-	if state.completed == nil || !state.toolCompleted {
-		return search.Response{}, search.NewError(search.ErrorInternal)
+	// Missing completed response.
+	if state.completed == nil {
+		return search.Response{}, search.NewError(search.ErrorInvalidProviderResponse)
+	}
+
+	// Missing matching tool evidence.
+	if !state.toolCompleted {
+		return search.Response{}, search.NewError(search.ErrorSearchNotPerformed)
 	}
 
 	answer := completedAnswer(*state.completed)
@@ -51,7 +58,7 @@ func Normalize(ctx context.Context, request search.Request, body io.Reader) (sea
 		answer = state.deltas.String()
 	}
 	if strings.TrimSpace(answer) == "" {
-		return search.Response{}, search.NewError(search.ErrorInternal)
+		return search.Response{}, search.NewError(search.ErrorInvalidProviderResponse)
 	}
 
 	for _, output := range state.completed.Output {
@@ -93,11 +100,33 @@ func Normalize(ctx context.Context, request search.Request, body io.Reader) (sea
 	}, nil
 }
 
-var errInvalidProviderResponse = invalidProviderResponseError{}
+// handleParseError translates a parseSSE failure into a typed search error.
+func handleParseError(err error) (search.Response, *search.Error) {
+	var ne normalizeError
+	if errors.As(err, &ne) {
+		return search.Response{}, search.NewError(ne.code)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return search.Response{}, search.NewError(search.ErrorRequestTimeout)
+	}
+	if errors.Is(err, context.Canceled) {
+		return search.Response{}, search.NewError(search.ErrorTransport)
+	}
+	return search.Response{}, search.NewError(search.ErrorTransport)
+}
 
-type invalidProviderResponseError struct{}
+// normalizeError carries a typed search error code through the parseSSE
+// callback chain. It is not exposed outside this package.
+type normalizeError struct {
+	code search.ErrorCode
+}
 
-func (invalidProviderResponseError) Error() string { return "invalid provider response" }
+func (e normalizeError) Error() string { return string(e.code) }
+
+var (
+	errProviderError           = normalizeError{code: search.ErrorProvider}
+	errInvalidProviderResponse = normalizeError{code: search.ErrorInvalidProviderResponse}
+)
 
 type normalizationState struct {
 	completed     *wireResponse
@@ -109,7 +138,7 @@ type normalizationState struct {
 func (state *normalizationState) accept(request search.Request, event wireEvent, collector *sourceCollector) error {
 	switch event.Type {
 	case "response.error", "response.failed":
-		return errInvalidProviderResponse
+		return errProviderError
 	case "response.completed":
 		if event.Response == nil {
 			return errInvalidProviderResponse
