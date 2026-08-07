@@ -78,6 +78,24 @@ func TestInvalidQueriesEmitOneUsageErrorBeforeLoadingCredentials(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("x over unique handle limit", func(t *testing.T) {
+		args := []string{"x"}
+		for index := 0; index < 21; index++ {
+			args = append(args, "--allow-handle", fmt.Sprintf("user%d", index))
+		}
+		args = append(args, "query")
+		loaded := false
+		runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+			loaded = true
+			return auth.Credential{}, nil
+		})
+		runtime.StdinIsTerminal = true
+		exitCode, stdout, stderr := run(runtime, args, "")
+		if exitCode != 2 || stdout != usageJSON || stderr != "" || loaded {
+			t.Fatalf("exit=%d stdout=%q stderr=%q loaded=%t", exitCode, stdout, stderr, loaded)
+		}
+	})
 }
 
 func TestHelpAndVersionAreHumanReadable(t *testing.T) {
@@ -295,6 +313,90 @@ func TestModelOptionIsOpaqueAndValidatedBeforeCredentials(t *testing.T) {
 			exitCode, stdout, stderr := run(runtime, test.args, "")
 			if exitCode != 2 || stdout != usageJSON || stderr != "" || loaded {
 				t.Fatalf("exit=%d stdout=%q stderr=%q loaded=%t", exitCode, stdout, stderr, loaded)
+			}
+		})
+	}
+}
+
+func TestFiltersValidateBeforeCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "web modes conflict", args: []string{"web", "--allow-domain", "a.example", "--exclude-domain", "b.example", "query"}},
+		{name: "web invalid scheme", args: []string{"web", "--allow-domain", "https://a.example", "query"}},
+		{name: "web invalid port", args: []string{"web", "--allow-domain=a.example:443", "query"}},
+		{name: "web invalid wildcard", args: []string{"web", "--allow-domain=*.example", "query"}},
+		{name: "web over unique limit", args: []string{"web", "--allow-domain", "a.example", "--allow-domain", "b.example", "--allow-domain", "c.example", "--allow-domain", "d.example", "--allow-domain", "e.example", "--allow-domain", "f.example", "query"}},
+		{name: "x modes conflict", args: []string{"x", "--allow-handle", "one", "--exclude-handle", "two", "query"}},
+		{name: "x at handle", args: []string{"x", "--allow-handle", "@one", "query"}},
+		{name: "x whitespace handle", args: []string{"x", "--allow-handle", "one two", "query"}},
+		{name: "x invalid date", args: []string{"x", "--from", "2026-02-30", "query"}},
+		{name: "x unpadded date", args: []string{"x", "--to=2026-2-03", "query"}},
+		{name: "x inverted dates", args: []string{"x", "--from", "2026-02-04", "--to", "2026-02-03", "query"}},
+		{name: "wrong type web filter", args: []string{"x", "--allow-domain", "a.example", "query"}},
+		{name: "wrong type x filter", args: []string{"web", "--allow-handle", "one", "query"}},
+		{name: "duplicate date", args: []string{"x", "--from", "2026-02-03", "--from=2026-02-04", "query"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			loaded := false
+			runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+				loaded = true
+				return auth.Credential{}, nil
+			})
+			runtime.StdinIsTerminal = true
+			exitCode, stdout, stderr := run(runtime, test.args, "")
+			if exitCode != 2 || stdout != usageJSON || stderr != "" || loaded {
+				t.Fatalf("exit=%d stdout=%q stderr=%q loaded=%t", exitCode, stdout, stderr, loaded)
+			}
+		})
+	}
+}
+
+func TestFiltersNormalizeAndForwardWithRequest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		args  []string
+		check func(t *testing.T, request search.Request)
+	}{
+		{
+			name: "web domains normalize and deduplicate",
+			args: []string{"web", "--allow-domain", "EXAMPLE.com", "--allow-domain=example.COM", "--allow-domain", "docs.example.com", "query"},
+			check: func(t *testing.T, request search.Request) {
+				if request.WebFilters == nil || request.XFilters != nil || strings.Join(request.WebFilters.AllowedDomains, ",") != "example.com,docs.example.com" || len(request.WebFilters.ExcludedDomains) != 0 {
+					t.Fatalf("filters = %#v", request)
+				}
+			},
+		},
+		{
+			name: "x handles and dates preserve spelling",
+			args: []string{"x", "--exclude-handle", "One", "--exclude-handle=One", "--exclude-handle", "二号", "--from", "2026-02-03", "--to=2026-02-04", "query"},
+			check: func(t *testing.T, request search.Request) {
+				if request.XFilters == nil || request.WebFilters != nil || strings.Join(request.XFilters.ExcludedHandles, ",") != "One,二号" || request.XFilters.FromDate != "2026-02-03" || request.XFilters.ToDate != "2026-02-04" {
+					t.Fatalf("filters = %#v", request)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+				return auth.Credential{}, nil
+			})
+			runtime.StdinIsTerminal = true
+			runtime.Search = func(_ context.Context, request search.Request, _ auth.Credential) (search.Response, *search.Error) {
+				test.check(t, request)
+				return search.Response{SchemaVersion: search.SchemaVersion, Type: request.Type, Query: request.Query, Model: request.Model, Answer: "ok", Sources: []search.Source{}, Warnings: []search.Warning{}}, nil
+			}
+			if exitCode, _, stderr := run(runtime, test.args, ""); exitCode != 0 || stderr != "" {
+				t.Fatalf("exit=%d stderr=%q", exitCode, stderr)
 			}
 		})
 	}

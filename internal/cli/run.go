@@ -45,6 +45,12 @@ type Runtime struct {
 type searchOptions struct {
 	authPath        string
 	model           string
+	allowDomains    []string
+	excludeDomains  []string
+	allowHandles    []string
+	excludeHandles  []string
+	fromDate        string
+	toDate          string
 	positional      []string
 	wantsHelp       bool
 	timeout         time.Duration
@@ -85,7 +91,8 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 	}
 
 	started := time.Now()
-	options, parseOK := parseSearchArgs(args[1:])
+	searchType := search.Type(args[0])
+	options, parseOK := parseSearchArgs(searchType, args[1:])
 	if !parseOK {
 		return writeSearchError(stdout, search.NewError(search.ErrorUsage))
 	}
@@ -127,12 +134,27 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 
 	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
 	defer cancel()
-	response, searchErr := runtime.Search(ctx, search.Request{
-		Type:            search.Type(args[0]),
+	request := search.Request{
+		Type:            searchType,
 		Query:           query,
 		Model:           options.model,
 		MaxOutputTokens: options.maxOutputTokens,
-	}, credential)
+	}
+	if searchType == search.TypeWeb && (len(options.allowDomains) > 0 || len(options.excludeDomains) > 0) {
+		request.WebFilters = &search.WebFilters{
+			AllowedDomains:  append([]string(nil), options.allowDomains...),
+			ExcludedDomains: append([]string(nil), options.excludeDomains...),
+		}
+	}
+	if searchType == search.TypeX && (len(options.allowHandles) > 0 || len(options.excludeHandles) > 0 || options.fromDate != "" || options.toDate != "") {
+		request.XFilters = &search.XFilters{
+			AllowedHandles:  append([]string(nil), options.allowHandles...),
+			ExcludedHandles: append([]string(nil), options.excludeHandles...),
+			FromDate:        options.fromDate,
+			ToDate:          options.toDate,
+		}
+	}
+	response, searchErr := runtime.Search(ctx, request, credential)
 	if searchErr != nil {
 		emitSearchErrorDiagnostic(stderr, options.verbose, "search", started, searchErr)
 		return writeSearchError(stdout, searchErr)
@@ -141,13 +163,15 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 	return writeSearchResponse(stdout, response)
 }
 
-func parseSearchArgs(args []string) (searchOptions, bool) {
+func parseSearchArgs(searchType search.Type, args []string) (searchOptions, bool) {
 	options := defaultSearchOptions()
 	seenAuthPath := false
 	seenTimeout := false
 	seenMaxOutputTokens := false
 	seenVerbose := false
 	seenModel := false
+	seenFrom := false
+	seenTo := false
 	for index := 0; index < len(args); index++ {
 		argument := args[index]
 		switch {
@@ -232,6 +256,122 @@ func parseSearchArgs(args []string) (searchOptions, bool) {
 			}
 			seenModel = true
 			options.model = model
+		case argument == "--allow-domain" || argument == "--exclude-domain":
+			if searchType != search.TypeWeb || index+1 >= len(args) {
+				return searchOptions{}, false
+			}
+			domain, ok := validDomain(args[index+1])
+			if !ok {
+				return searchOptions{}, false
+			}
+			index++
+			if argument == "--allow-domain" {
+				if options.allowDomains, ok = appendUnique(options.allowDomains, domain, 5); !ok {
+					return searchOptions{}, false
+				}
+			} else {
+				if options.excludeDomains, ok = appendUnique(options.excludeDomains, domain, 5); !ok {
+					return searchOptions{}, false
+				}
+			}
+		case strings.HasPrefix(argument, "--allow-domain=") || strings.HasPrefix(argument, "--exclude-domain="):
+			if searchType != search.TypeWeb {
+				return searchOptions{}, false
+			}
+			isAllow := strings.HasPrefix(argument, "--allow-domain=")
+			value := strings.TrimPrefix(argument, "--exclude-domain=")
+			if isAllow {
+				value = strings.TrimPrefix(argument, "--allow-domain=")
+			}
+			domain, ok := validDomain(value)
+			if !ok {
+				return searchOptions{}, false
+			}
+			if isAllow {
+				if options.allowDomains, ok = appendUnique(options.allowDomains, domain, 5); !ok {
+					return searchOptions{}, false
+				}
+			} else {
+				if options.excludeDomains, ok = appendUnique(options.excludeDomains, domain, 5); !ok {
+					return searchOptions{}, false
+				}
+			}
+		case argument == "--allow-handle" || argument == "--exclude-handle":
+			if searchType != search.TypeX || index+1 >= len(args) {
+				return searchOptions{}, false
+			}
+			handle, ok := validHandle(args[index+1])
+			if !ok {
+				return searchOptions{}, false
+			}
+			index++
+			if argument == "--allow-handle" {
+				if options.allowHandles, ok = appendUnique(options.allowHandles, handle, 20); !ok {
+					return searchOptions{}, false
+				}
+			} else {
+				if options.excludeHandles, ok = appendUnique(options.excludeHandles, handle, 20); !ok {
+					return searchOptions{}, false
+				}
+			}
+		case strings.HasPrefix(argument, "--allow-handle=") || strings.HasPrefix(argument, "--exclude-handle="):
+			if searchType != search.TypeX {
+				return searchOptions{}, false
+			}
+			isAllow := strings.HasPrefix(argument, "--allow-handle=")
+			value := strings.TrimPrefix(argument, "--exclude-handle=")
+			if isAllow {
+				value = strings.TrimPrefix(argument, "--allow-handle=")
+			}
+			handle, ok := validHandle(value)
+			if !ok {
+				return searchOptions{}, false
+			}
+			if isAllow {
+				if options.allowHandles, ok = appendUnique(options.allowHandles, handle, 20); !ok {
+					return searchOptions{}, false
+				}
+			} else {
+				if options.excludeHandles, ok = appendUnique(options.excludeHandles, handle, 20); !ok {
+					return searchOptions{}, false
+				}
+			}
+		case argument == "--from" || argument == "--to":
+			if searchType != search.TypeX || index+1 >= len(args) {
+				return searchOptions{}, false
+			}
+			value, ok := validDate(args[index+1])
+			if !ok || (argument == "--from" && seenFrom) || (argument == "--to" && seenTo) {
+				return searchOptions{}, false
+			}
+			index++
+			if argument == "--from" {
+				seenFrom = true
+				options.fromDate = value
+			} else {
+				seenTo = true
+				options.toDate = value
+			}
+		case strings.HasPrefix(argument, "--from=") || strings.HasPrefix(argument, "--to="):
+			if searchType != search.TypeX {
+				return searchOptions{}, false
+			}
+			isFrom := strings.HasPrefix(argument, "--from=")
+			value := strings.TrimPrefix(argument, "--to=")
+			if isFrom {
+				value = strings.TrimPrefix(argument, "--from=")
+			}
+			value, ok := validDate(value)
+			if !ok || (isFrom && seenFrom) || (!isFrom && seenTo) {
+				return searchOptions{}, false
+			}
+			if isFrom {
+				seenFrom = true
+				options.fromDate = value
+			} else {
+				seenTo = true
+				options.toDate = value
+			}
 		case argument == "--verbose":
 			if seenVerbose {
 				return searchOptions{}, false
@@ -243,7 +383,7 @@ func parseSearchArgs(args []string) (searchOptions, bool) {
 				return searchOptions{}, false
 			}
 			options.positional = append(options.positional, args[index+1])
-			return options, true
+			return options, validFilterCombinations(options)
 		case strings.HasPrefix(argument, "-"):
 			return searchOptions{}, false
 		default:
@@ -253,7 +393,7 @@ func parseSearchArgs(args []string) (searchOptions, bool) {
 			}
 		}
 	}
-	return options, true
+	return options, validFilterCombinations(options)
 }
 
 func parseTimeout(value string) (time.Duration, bool) {
@@ -282,6 +422,66 @@ func validModel(value string) bool {
 		}
 	}
 	return true
+}
+
+func validDomain(value string) (string, bool) {
+	if value == "" || len(value) > 253 || strings.ContainsAny(value, ":/?#@*\\") {
+		return "", false
+	}
+	value = strings.ToLower(value)
+	labels := strings.Split(value, ".")
+	for _, label := range labels {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", false
+		}
+		for _, character := range label {
+			if !((character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') || character == '-') {
+				return "", false
+			}
+		}
+	}
+	return value, true
+}
+
+func validFilterCombinations(options searchOptions) bool {
+	return !(len(options.allowDomains) > 0 && len(options.excludeDomains) > 0) &&
+		!(len(options.allowHandles) > 0 && len(options.excludeHandles) > 0) &&
+		!(options.fromDate != "" && options.toDate != "" && options.fromDate > options.toDate)
+}
+
+func validHandle(value string) (string, bool) {
+	if value == "" || len(value) > 64 || !utf8.ValidString(value) || strings.Contains(value, "@") {
+		return "", false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) || unicode.IsSpace(character) {
+			return "", false
+		}
+	}
+	return value, true
+}
+
+func validDate(value string) (string, bool) {
+	if len(value) != len("2006-01-02") {
+		return "", false
+	}
+	date, err := time.Parse("2006-01-02", value)
+	if err != nil || date.Format("2006-01-02") != value {
+		return "", false
+	}
+	return value, true
+}
+
+func appendUnique(values []string, value string, limit int) ([]string, bool) {
+	for _, existing := range values {
+		if existing == value {
+			return values, true
+		}
+	}
+	if len(values) >= limit {
+		return nil, false
+	}
+	return append(values, value), true
 }
 
 // emitDiagnostic writes one allowlisted diagnostic line to stderr. A line

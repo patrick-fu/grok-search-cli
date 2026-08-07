@@ -21,6 +21,23 @@ type Request struct {
 	// MaxOutputTokens bounds the provider's output size. Zero means the
 	// transport default applies.
 	MaxOutputTokens int
+	WebFilters      *WebFilters
+	XFilters        *XFilters
+}
+
+// WebFilters contains one mutually exclusive, normalized domain filter set.
+type WebFilters struct {
+	AllowedDomains  []string
+	ExcludedDomains []string
+}
+
+// XFilters contains one mutually exclusive handle filter set and optional,
+// already-validated inclusive date bounds.
+type XFilters struct {
+	AllowedHandles  []string
+	ExcludedHandles []string
+	FromDate        string
+	ToDate          string
 }
 
 // Response is a successful normalized answer to one Request.

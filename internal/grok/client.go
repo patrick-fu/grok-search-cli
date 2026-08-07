@@ -329,7 +329,17 @@ type requestBody struct {
 }
 
 type searchTool struct {
-	Type string `json:"type"`
+	Type             string            `json:"type"`
+	Filters          *webSearchFilters `json:"filters,omitempty"`
+	AllowedXHandles  []string          `json:"allowed_x_handles,omitempty"`
+	ExcludedXHandles []string          `json:"excluded_x_handles,omitempty"`
+	FromDate         string            `json:"from_date,omitempty"`
+	ToDate           string            `json:"to_date,omitempty"`
+}
+
+type webSearchFilters struct {
+	AllowedDomains  []string `json:"allowed_domains,omitempty"`
+	ExcludedDomains []string `json:"excluded_domains,omitempty"`
 }
 
 type reasoningSpec struct {
@@ -349,10 +359,26 @@ func (c *client) buildBody(request search.Request) ([]byte, error) {
 	if maxOutputTokens == 0 {
 		maxOutputTokens = 1024
 	}
+	tool := searchTool{Type: toolTypeFor(request.Type)}
+	if request.Type == search.TypeWeb && request.WebFilters != nil {
+		filters := &webSearchFilters{
+			AllowedDomains:  append([]string(nil), request.WebFilters.AllowedDomains...),
+			ExcludedDomains: append([]string(nil), request.WebFilters.ExcludedDomains...),
+		}
+		if len(filters.AllowedDomains) > 0 || len(filters.ExcludedDomains) > 0 {
+			tool.Filters = filters
+		}
+	}
+	if request.Type == search.TypeX && request.XFilters != nil {
+		tool.AllowedXHandles = append([]string(nil), request.XFilters.AllowedHandles...)
+		tool.ExcludedXHandles = append([]string(nil), request.XFilters.ExcludedHandles...)
+		tool.FromDate = request.XFilters.FromDate
+		tool.ToDate = request.XFilters.ToDate
+	}
 	return json.Marshal(requestBody{
 		Model:           modelFor(request),
 		Input:           request.Query,
-		Tools:           []searchTool{{Type: toolTypeFor(request.Type)}},
+		Tools:           []searchTool{tool},
 		ToolChoice:      "required",
 		Stream:          true,
 		Store:           false,

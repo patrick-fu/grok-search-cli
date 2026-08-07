@@ -239,6 +239,95 @@ func TestSearch_ExactRequestForWeb(t *testing.T) {
 	}
 }
 
+func TestSearch_FilterToolShapesAndOmission(t *testing.T) {
+	tests := []struct {
+		name    string
+		request search.Request
+		check   func(t *testing.T, tool searchTool)
+	}{
+		{
+			name:    "web allowed domains",
+			request: search.Request{Type: search.TypeWeb, Query: "q", WebFilters: &search.WebFilters{AllowedDomains: []string{"example.com", "docs.example.com"}}},
+			check: func(t *testing.T, tool searchTool) {
+				if tool.Filters == nil || !reflect.DeepEqual(tool.Filters.AllowedDomains, []string{"example.com", "docs.example.com"}) || len(tool.Filters.ExcludedDomains) != 0 {
+					t.Fatalf("tool = %#v", tool)
+				}
+			},
+		},
+		{
+			name:    "web excluded domains",
+			request: search.Request{Type: search.TypeWeb, Query: "q", WebFilters: &search.WebFilters{ExcludedDomains: []string{"example.com"}}},
+			check: func(t *testing.T, tool searchTool) {
+				if tool.Filters == nil || !reflect.DeepEqual(tool.Filters.ExcludedDomains, []string{"example.com"}) || len(tool.Filters.AllowedDomains) != 0 {
+					t.Fatalf("tool = %#v", tool)
+				}
+			},
+		},
+		{
+			name:    "x direct fields",
+			request: search.Request{Type: search.TypeX, Query: "q", XFilters: &search.XFilters{AllowedHandles: []string{"one"}, FromDate: "2026-02-03", ToDate: "2026-02-04"}},
+			check: func(t *testing.T, tool searchTool) {
+				if tool.Filters != nil || !reflect.DeepEqual(tool.AllowedXHandles, []string{"one"}) || len(tool.ExcludedXHandles) != 0 || tool.FromDate != "2026-02-03" || tool.ToDate != "2026-02-04" {
+					t.Fatalf("tool = %#v", tool)
+				}
+			},
+		},
+		{
+			name:    "unused filters omitted",
+			request: search.Request{Type: search.TypeX, Query: "q"},
+			check: func(t *testing.T, tool searchTool) {
+				if tool.Filters != nil || len(tool.AllowedXHandles) != 0 || len(tool.ExcludedXHandles) != 0 || tool.FromDate != "" || tool.ToDate != "" {
+					t.Fatalf("tool = %#v", tool)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			text := validSSE("ok")
+			if test.request.Type == search.TypeX {
+				text = validSSEX("ok")
+			}
+			rt := &fakeRoundTripper{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, text: text}
+			_, err := NewClient("tok", "1.0", rt).Search(context.Background(), test.request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body requestBody
+			if err := json.Unmarshal(rt.body, &body); err != nil {
+				t.Fatal(err)
+			}
+			if len(body.Tools) != 1 {
+				t.Fatalf("tools = %#v", body.Tools)
+			}
+			test.check(t, body.Tools[0])
+		})
+	}
+}
+
+func TestSearch_FilterRejectedWithoutFallbackOrRetry(t *testing.T) {
+	rt := &scriptedRoundTripper{results: []roundTripResult{
+		{status: http.StatusBadRequest, header: http.Header{}},
+		{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, text: validSSE("must not run")},
+	}}
+	c := NewClient("tok", "1.0", rt).(*client)
+	c.waitRetry = func(context.Context, time.Duration) bool {
+		t.Fatal("provider rejection must not retry")
+		return false
+	}
+	_, err := c.Search(context.Background(), search.Request{
+		Type: search.TypeWeb, Query: "q", WebFilters: &search.WebFilters{AllowedDomains: []string{"example.com"}},
+	})
+	if err == nil || err.Code != search.ErrorRequestRejected || len(rt.bodies) != 1 {
+		t.Fatalf("error=%#v attempts=%d", err, len(rt.bodies))
+	}
+	var body requestBody
+	if err := json.Unmarshal(rt.bodies[0], &body); err != nil || body.Tools[0].Filters == nil || !reflect.DeepEqual(body.Tools[0].Filters.AllowedDomains, []string{"example.com"}) {
+		t.Fatalf("body=%q decoded=%#v err=%v", rt.bodies[0], body, err)
+	}
+}
+
 func TestSearch_DefaultModel(t *testing.T) {
 	rt := &fakeRoundTripper{
 		status: 200,
