@@ -10,8 +10,9 @@ Agent-friendly CLI for Grok-powered web and X search.
 
 ## Status
 
-V1 is implemented for private, repository-owner use at the owner's risk. There
-is no distributed binary yet. See the [V1 specification](docs/spec/v1.md).
+V1 is implemented for private, repository-owner use at the owner's risk.
+Private artifacts can be built locally but are never uploaded or distributed.
+See the [V1 specification](docs/spec/v1.md).
 
 Public distribution, Homebrew publication, and shared-service operation remain
 blocked until xAI gives this project retained written authorization. Building
@@ -19,16 +20,19 @@ or running it successfully does not unlock any form of distribution.
 
 ## Install
 
-There is no public release artifact. The V1 spec permits private CI to build
-artifacts but forbids publishing them, so installation is a placeholder for now:
+There is no public release artifact. Build a private archive for the owner's
+matching macOS/Linux and amd64/arm64 target, then verify its SHA-256 sidecar:
 
 ```sh
-git clone <this repo> && cd grok-search-cli
-go build -o grok-search ./cmd/grok-search
+VERSION=0.1.0-private.1 SOURCE_DATE_EPOCH=1700000000 scripts/build-private-artifacts.sh
+shasum -a 256 -c dist/private/grok-search_0.1.0-private.1_darwin_arm64.tar.gz.sha256
+tar -xzf dist/private/grok-search_0.1.0-private.1_darwin_arm64.tar.gz
 ```
 
-This produces a private binary for the owner's own machine. Do not redistribute
-the built binary or operate it as a shared service.
+Each archive includes `METADATA.json` with its version, target, compatibility
+floor `0.2.117`, and private owner-risk status. See the
+[owner-invoked manual smoke procedure](docs/manual-smoke.md). Do not
+redistribute the binary or operate it as a shared service.
 
 ## Authentication
 

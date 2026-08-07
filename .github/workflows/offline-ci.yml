@@ -1,0 +1,75 @@
+name: Offline CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Format, vet, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt required on:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Run go vet
+        run: go vet ./...
+      - name: Run tests with race detector
+        run: go test -race ./...
+
+  build:
+    name: Cross-compile ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build and verify a private archive in temp output
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          out="$RUNNER_TEMP/grok-search-$GOOS-$GOARCH"
+          VERSION=0.0.0-ci \
+            SOURCE_DATE_EPOCH=1700000000 \
+            TARGETS="$GOOS/$GOARCH" \
+            OUTPUT_DIR="$out" \
+            scripts/build-private-artifacts.sh
+          archive="$out/grok-search_0.0.0-ci_${GOOS}_${GOARCH}.tar.gz"
+          go run ./scripts/release/private_archive.go \
+            --verify "$archive" \
+            --checksum "$archive.sha256" \
+            --version 0.0.0-ci \
+            --goos "$GOOS" \
+            --goarch "$GOARCH" \
+            --source-date-epoch 1700000000
