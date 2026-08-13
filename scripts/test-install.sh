@@ -98,14 +98,14 @@ success_output="$(run_install)"
 
 latest_log="$test_dir/latest-urls"
 url_log="$latest_log" run_install >/dev/null
-[[ "$(rg -xc 'https://fixture.invalid/releases/latest/download/manifest.json' "$latest_log")" == 1 ]]
-[[ "$(rg -xc "https://fixture.invalid/releases/download/v$version/grok-search_${version}_${os}_${arch}.tar.gz" "$latest_log")" == 1 ]]
+[[ "$(grep -Fxc 'https://fixture.invalid/releases/latest/download/manifest.json' "$latest_log")" == 1 ]]
+[[ "$(grep -Fxc "https://fixture.invalid/releases/download/v$version/grok-search_${version}_${os}_${arch}.tar.gz" "$latest_log")" == 1 ]]
 
 url_log="$test_dir/urls"
 VERSION="$version" run_install >/dev/null
 VERSION="v$version" run_install >/dev/null
-[[ "$(rg -xc "https://fixture.invalid/releases/download/v$version/manifest.json" "$url_log")" == 2 ]]
-[[ "$(rg -xc "https://fixture.invalid/releases/download/v$version/grok-search_${version}_${os}_${arch}.tar.gz" "$url_log")" == 2 ]]
+[[ "$(grep -Fxc "https://fixture.invalid/releases/download/v$version/manifest.json" "$url_log")" == 2 ]]
+[[ "$(grep -Fxc "https://fixture.invalid/releases/download/v$version/grok-search_${version}_${os}_${arch}.tar.gz" "$url_log")" == 2 ]]
 if VERSION=latest run_install >/dev/null 2>&1; then
   fail 'non-SemVer VERSION unexpectedly installed'
 fi
