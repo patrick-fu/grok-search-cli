@@ -2,6 +2,29 @@
 
 Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
+## Public-data redaction gate
+
+Before creating, editing, reading back, or commenting on any public issue or PR,
+apply this gate to every title, body, comment, log excerpt, and attachment. The
+same gate applies to text copied from command output.
+
+- Use synthetic values or `[REDACTED]` for all secrets and personal data.
+- Keep credentials out entirely: never include real access/refresh tokens, API
+  keys, cookies, full credential JSON, callback URLs, or unredacted request
+  headers.
+- Replace usernames and absolute filesystem paths with placeholders such as
+  `user@example` and `/path/to/repo`.
+- Replace real search queries and answers with synthetic examples; do not paste
+  `request_id` values.
+- For errors, retain only the stable client-facing code, message, retryability,
+  and (when needed) HTTP status. Remove timestamps, IDs, URLs with embedded
+  state, headers, stack traces, and other request-specific data.
+
+When a report needs sensitive evidence, describe the symptom publicly and use a
+private GitHub Security Advisory for the details. Never use an issue, PR, or
+comment as a secret-transfer channel. If a draft contains disallowed data,
+stop, redact it locally, and re-check the complete text before sending.
+
 ## Conventions
 
 - **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.

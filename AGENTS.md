@@ -39,6 +39,17 @@
 
 Issues and PRDs are tracked in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
 
+Before any public issue, pull request, or comment operation, read
+`docs/agents/issue-tracker.md` and apply its redaction gate. That document is
+the single source of truth for public-data handling; do not duplicate its
+rules in other agent instructions.
+
+### Local skill source
+
+`skills/grok-search/SKILL.md` is the unique source for this repository's
+`grok-search` skill behavior. When a task invokes or changes that skill, read
+that file; do not restate or fork its instructions elsewhere.
+
 ### Triage labels
 
 Use the five default canonical triage labels. See `docs/agents/triage-labels.md`.

@@ -13,8 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: false
@@ -30,6 +32,10 @@ jobs:
         run: go vet ./...
       - name: Run tests with race detector
         run: go test -race ./...
+      - name: Check installer shell
+        run: shellcheck install.sh scripts/test-install.sh
+      - name: Run installer tests
+        run: bash scripts/test-install.sh
 
   build:
     name: Cross-compile ${{ matrix.goos }}/${{ matrix.goarch }}
@@ -48,28 +54,28 @@ jobs:
           - goos: linux
             goarch: arm64
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: false
       - name: Build and verify a private archive in temp output
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          out="$RUNNER_TEMP/grok-search-$GOOS-$GOARCH"
+          out="$RUNNER_TEMP/grok-search-${{ matrix.goos }}-${{ matrix.goarch }}"
           VERSION=0.0.0-ci \
             SOURCE_DATE_EPOCH=1700000000 \
-            TARGETS="$GOOS/$GOARCH" \
+            TARGETS="${{ matrix.goos }}/${{ matrix.goarch }}" \
             OUTPUT_DIR="$out" \
             scripts/build-private-artifacts.sh
-          archive="$out/grok-search_0.0.0-ci_${GOOS}_${GOARCH}.tar.gz"
+          archive="$out/grok-search_0.0.0-ci_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz"
           go run ./scripts/release/private_archive.go \
             --verify "$archive" \
             --checksum "$archive.sha256" \
             --version 0.0.0-ci \
-            --goos "$GOOS" \
-            --goarch "$GOARCH" \
+            --goos "${{ matrix.goos }}" \
+            --goarch "${{ matrix.goarch }}" \
             --source-date-epoch 1700000000

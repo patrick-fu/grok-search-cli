@@ -16,6 +16,7 @@ import (
 	"github.com/patrick-fu/grok-search-cli/internal/auth"
 	"github.com/patrick-fu/grok-search-cli/internal/grok"
 	"github.com/patrick-fu/grok-search-cli/internal/search"
+	updatecli "github.com/patrick-fu/grok-search-cli/internal/update"
 )
 
 const (
@@ -40,6 +41,7 @@ type Runtime struct {
 	Now             func() time.Time
 	LoadCredential  func(path string, now time.Time) (auth.Credential, *search.Error)
 	Search          func(ctx context.Context, request search.Request, credential auth.Credential) (search.Response, *search.Error)
+	Update          func(ctx context.Context, version string) (updatecli.Result, error)
 }
 
 type searchOptions struct {
@@ -85,6 +87,28 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer, run
 	}
 	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
 		return writeHuman(stdout, fmt.Sprintf("grok-search %s\n", runtime.Version))
+	}
+	if len(args) > 0 && args[0] == "update" {
+		if len(args) != 1 {
+			return 2
+		}
+		updater := runtime.Update
+		if updater == nil {
+			updater = func(ctx context.Context, version string) (updatecli.Result, error) {
+				return updatecli.Apply(ctx, updatecli.Config{CurrentVersion: version})
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		result, err := updater(ctx, runtime.Version)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "update failed: %s\n", err)
+			return 4
+		}
+		if !result.Updated {
+			return writeHuman(stdout, fmt.Sprintf("grok-search %s is already up to date.\n", result.CurrentVersion))
+		}
+		return writeHuman(stdout, fmt.Sprintf("Updated grok-search from %s to %s.\n", result.CurrentVersion, result.LatestVersion))
 	}
 	if len(args) == 0 || (args[0] != "web" && args[0] != "x") {
 		return writeSearchError(stdout, search.NewError(search.ErrorUsage))
@@ -606,4 +630,5 @@ Usage:
   grok-search x [--model <id>] [--auth-file <path>] [--timeout <duration>] [--max-output-tokens <n>] [--verbose] [query]
   grok-search help
   grok-search version
+  grok-search update
 `

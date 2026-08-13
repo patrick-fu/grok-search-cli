@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Owner-invoked compatibility smoke. It is intentionally absent from CI.
+# User-invoked compatibility smoke. It is intentionally absent from CI.
 set -euo pipefail
 
 usage() {

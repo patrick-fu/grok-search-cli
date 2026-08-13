@@ -52,6 +52,8 @@ for target in $targets; do
         ./cmd/grok-search
 
     env \
+      GOOS= \
+      GOARCH= \
       GOFLAGS= \
       GOPROXY=off \
       GOSUMDB=off \

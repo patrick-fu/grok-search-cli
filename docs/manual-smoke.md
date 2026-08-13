@@ -1,14 +1,13 @@
-# Owner-invoked manual smoke
+# Explicit live smoke
 
 This procedure is off by default and is not part of CI. It exercises the live
-subscription proxy only when the repository owner explicitly chooses to do so.
-Passing it demonstrates a narrow technical compatibility check; it is not xAI
-authorization and does not permit public releases, sharing, Homebrew, or a
-hosted service.
+subscription proxy only when the user explicitly chooses to do so. Passing it
+demonstrates a narrow technical compatibility check; it is not xAI
+authorization.
 
-## Prepare a private artifact
+## Prepare a local artifact
 
-Build private archives locally; this command neither uploads nor publishes:
+Build local archives; this command neither uploads nor publishes:
 
 ```sh
 VERSION=0.1.0-private.1 SOURCE_DATE_EPOCH=1700000000 scripts/build-private-artifacts.sh
@@ -16,8 +15,8 @@ VERSION=0.1.0-private.1 SOURCE_DATE_EPOCH=1700000000 scripts/build-private-artif
 
 Choose the matching archive under `dist/private/`, verify its sidecar checksum,
 and extract it. V1 supports macOS and Linux on amd64 and arm64. `METADATA.json`
-inside each archive records the target, version, private owner-risk status, and
-compatibility floor `0.2.117`.
+inside each archive records the target, version, and compatibility floor
+`0.2.117`.
 
 ```sh
 shasum -a 256 -c dist/private/grok-search_0.1.0-private.1_darwin_arm64.tar.gz.sha256
@@ -25,7 +24,8 @@ tar -xzf dist/private/grok-search_0.1.0-private.1_darwin_arm64.tar.gz
 ./grok-search version
 ```
 
-On Linux, use `sha256sum -c` instead of `shasum -a 256 -c`.
+On Linux, use `sha256sum -c` instead of `shasum -a 256 -c`. An installed
+release binary from `install.sh` or `grok-search update` is also valid.
 
 ## Run the smoke explicitly
 
@@ -50,6 +50,6 @@ required on every invocation. Do not add `--verbose`: smoke output is intended
 to remain a small sanitized summary.
 
 If either request fails or the credential snapshot changes, stop and investigate
-locally. Do not retry by refreshing credentials, changing headers, removing
-filters, or publishing the artifact. A successful run remains private,
-owner-risk technical evidence only; it does not establish authorization.
+locally. Do not retry by refreshing credentials, changing headers, or removing
+filters. A successful run remains unofficial, user-risk technical evidence; it
+does not establish authorization.

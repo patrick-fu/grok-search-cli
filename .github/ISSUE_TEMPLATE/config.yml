@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/patrick-fu/grok-search-cli/security/advisories/new
+    about: Use a private GitHub Security Advisory; do not disclose sensitive evidence publicly.

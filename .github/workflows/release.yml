@@ -1,0 +1,162 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Verify release source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt required on:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Run go vet
+        run: go vet ./...
+      - name: Run tests with race detector
+        run: go test -race ./...
+      - name: Verify installer
+        run: |
+          shellcheck install.sh scripts/test-install.sh
+          bash scripts/test-install.sh
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build and archive
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          # Git tag is vX.Y.Z; strip the leading v for binary/manifest/archive names.
+          version="${GITHUB_REF_NAME#v}"
+          if ! [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "invalid SemVer tag: ${GITHUB_REF_NAME}" >&2
+            exit 1
+          fi
+          goos="${{ matrix.goos }}"
+          goarch="${{ matrix.goarch }}"
+          epoch="$(git log -1 --format=%ct)"
+          binary="dist/grok-search-${goos}-${goarch}"
+          archive="dist/grok-search_${version}_${goos}_${goarch}.tar.gz"
+          mkdir -p dist
+
+          env GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
+            GOPROXY=off GOSUMDB=off GONOSUMDB='*' GOTOOLCHAIN=local \
+            go build \
+              -trimpath -buildvcs=false \
+              -ldflags="-buildid= -s -w -X main.version=${version}" \
+              -o "${binary}" \
+              ./cmd/grok-search
+
+          go run ./scripts/release/private_archive.go \
+            --input "${binary}" \
+            --output "${archive}" \
+            --version "${version}" \
+            --goos "${goos}" \
+            --goarch "${goarch}" \
+            --source-date-epoch "${epoch}" \
+            --visibility public
+
+          go run ./scripts/release/private_archive.go \
+            --verify "${archive}" \
+            --checksum "${archive}.sha256" \
+            --version "${version}" \
+            --goos "${goos}" \
+            --goarch "${goarch}" \
+            --source-date-epoch "${epoch}" \
+            --visibility public
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: archive-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          retention-days: 1
+
+  release:
+    name: Publish release assets
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          pattern: archive-*
+          merge-multiple: true
+      - name: Generate manifest and checksums
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          go run ./scripts/release/private_archive.go \
+            --manifest-dir dist \
+            --manifest-output "dist/checksums.txt"
+          go run ./scripts/release/private_archive.go \
+            --manifest-dir dist \
+            --manifest-json "dist/manifest.json" \
+            --version "${version}"
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          release_flags=(--title "${tag}" --generate-notes)
+          if [[ "$tag" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "${tag}" \
+            "${release_flags[@]}" \
+            dist/*.tar.gz \
+            dist/*.tar.gz.sha256 \
+            dist/checksums.txt \
+            dist/manifest.json \
+            install.sh

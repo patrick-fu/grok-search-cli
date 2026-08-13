@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible problem with the CLI
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before submitting, remove secrets and personal/request data. Use synthetic values or `[REDACTED]`.
+        Never include tokens, cookies, credential JSON, callback URLs, unredacted headers, usernames,
+        absolute paths, real queries/answers, or `request_id` values. For sensitive security reports,
+        use GitHub Security Advisories instead.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened? Keep this concise and redacted.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Provide commands with synthetic input and the smallest safe reproduction.
+      placeholder: |
+        printf '%s' 'synthetic query' | grok-search web
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include only stable error fields such as code, message, retryable, and optional HTTP status.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: 0.0.0
+    validations:
+      required: true

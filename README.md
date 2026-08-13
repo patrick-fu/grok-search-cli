@@ -4,35 +4,55 @@ Agent-friendly CLI for Grok-powered web and X search.
 
 > [!IMPORTANT]
 > This is an unofficial, experimental project. It is not affiliated with or
-> endorsed by xAI. It reuses a private Grok Build login at the owner's risk.
-> xAI has not authorized this integration, and a technically successful request
-> is **not** authorization.
+> endorsed by xAI. It reuses a Grok Build login at the user's risk. xAI has
+> not authorized this integration, and a technically successful request is
+> **not** authorization. The user is responsible for whether their use
+> complies with applicable xAI terms.
 
 ## Status
 
-V1 is implemented for private, repository-owner use at the owner's risk.
-Private artifacts can be built locally but are never uploaded or distributed.
+V1 is implemented. Source and GitHub Release binaries are public. Use remains
+unofficial and at the user's risk. Do not operate the CLI as a shared service.
 See the [V1 specification](docs/spec/v1.md).
-
-Public distribution, Homebrew publication, and shared-service operation remain
-blocked until xAI gives this project retained written authorization. Building
-or running it successfully does not unlock any form of distribution.
 
 ## Install
 
-There is no public release artifact. Build a private archive for the owner's
-matching macOS/Linux and amd64/arm64 target, then verify its SHA-256 sidecar:
+V1 supports macOS and Linux on amd64 and arm64. The installer downloads the
+matching GitHub Release archive, verifies its SHA-256 sidecar, and writes
+`grok-search` to `${INSTALL_DIR:-$HOME/.local/bin}`:
 
 ```sh
-VERSION=0.1.0-private.1 SOURCE_DATE_EPOCH=1700000000 scripts/build-private-artifacts.sh
-shasum -a 256 -c dist/private/grok-search_0.1.0-private.1_darwin_arm64.tar.gz.sha256
-tar -xzf dist/private/grok-search_0.1.0-private.1_darwin_arm64.tar.gz
+curl -fsSL https://github.com/patrick-fu/grok-search-cli/releases/latest/download/install.sh | bash
 ```
 
-Each archive includes `METADATA.json` with its version, target, compatibility
-floor `0.2.117`, and private owner-risk status. See the
-[owner-invoked manual smoke procedure](docs/manual-smoke.md). Do not
-redistribute the binary or operate it as a shared service.
+Pin a release tag with `VERSION=<tag>`. Put `$HOME/.local/bin` on `PATH` if
+needed. The installer does not edit shell rc files, use `sudo`, or read
+credentials.
+
+From source:
+
+```sh
+go build -o grok-search ./cmd/grok-search
+```
+
+## Update
+
+```sh
+grok-search update
+```
+
+`update` replaces the current binary with the latest GitHub Release for this
+platform after the same checksum verification as the installer. It does not
+refresh credentials or call xAI.
+
+## Agent skill
+
+This repository is the only source for the `grok-search` skill. Installing
+the skill does not install the CLI:
+
+```sh
+npx skills add patrick-fu/grok-search-cli -g -s grok-search -a universal claude-code -y --full-depth
+```
 
 ## Authentication
 
@@ -59,13 +79,15 @@ grok-search web [common flags] [web flags] [query]
 grok-search x   [common flags] [x flags]   [query]
 grok-search help
 grok-search version
+grok-search update
 ```
 
-### help and version
+### help, version, and update
 
 `help`, `--help`, and `-h` print human-readable usage text and exit `0`.
-`version` and `--version` print `grok-search <version>` and exit `0`. These are
-the only non-search commands.
+`version` and `--version` print `grok-search <version>` and exit `0`.
+`update` writes human-readable status and replaces the current binary; it is
+not a search command and does not emit search JSON.
 
 ### Query input: stdin or positional
 
@@ -203,10 +225,10 @@ messages on stdout.
 
 | Exit | Meaning |
 | --- | --- |
-| `0` | Search success, `help`, or `version`. |
-| `2` | Local usage or input-validation failure (`usage_error`). |
+| `0` | Search success, `help`, `version`, or successful/no-op `update`. |
+| `2` | Local usage or input-validation failure (`usage_error` for search commands). |
 | `3` | Credential/authentication failure (missing, unreadable, insecure, invalid, expired, or rejected). |
-| `4` | Transport, provider, compatibility, response, or search failure. |
+| `4` | Transport, provider, compatibility, response, search, or update failure. |
 | `70` | Sanitized unexpected internal failure. |
 
 ## Diagnostics (--verbose)
@@ -242,9 +264,11 @@ echo "x" | ./grok-search web --auth-file /tmp/no-such-cred      # exit 3 (auth_m
 
 Each line is fully offline: `help` and `version` never touch auth or network,
 and the `web` line fails at credential loading (exit `3`) before any request is
-made. They contain no real credentials. A search that reaches the provider
-requires a valid `grok login` and is an explicit, owner-risk manual action — not
-part of these offline checks.
+made. They contain no real credentials. `update` and the curl installer need
+GitHub Release HTTPS and are not part of these offline checks. A search that
+reaches the provider requires a valid `grok login` and is an explicit,
+user-risk manual action — not part of these offline checks. See the
+[explicit live smoke procedure](docs/manual-smoke.md).
 
 ## Security
 

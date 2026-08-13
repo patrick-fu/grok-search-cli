@@ -18,6 +18,7 @@ import (
 	"github.com/patrick-fu/grok-search-cli/internal/auth"
 	"github.com/patrick-fu/grok-search-cli/internal/cli"
 	"github.com/patrick-fu/grok-search-cli/internal/search"
+	updatecli "github.com/patrick-fu/grok-search-cli/internal/update"
 )
 
 var fixedNow = time.Date(2026, time.August, 5, 12, 0, 0, 0, time.UTC)
@@ -116,6 +117,45 @@ func TestHelpAndVersionAreHumanReadable(t *testing.T) {
 	exitCode, stdout, stderr := run(runtime, []string{"version"}, "")
 	if exitCode != 0 || stdout != "grok-search 1.2.3-test\n" || stderr != "" {
 		t.Fatalf("version: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
+	}
+}
+
+func TestUpdateCommandIsDirectAndNeverLoadsCredentials(t *testing.T) {
+	loaded := false
+	runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+		loaded = true
+		return auth.Credential{}, nil
+	})
+	runtime.Version = "1.0.0"
+	runtime.Update = func(_ context.Context, version string) (updatecli.Result, error) {
+		if version != "1.0.0" {
+			t.Fatalf("version = %q", version)
+		}
+		return updatecli.Result{CurrentVersion: version, LatestVersion: "1.1.0", Updated: true}, nil
+	}
+	exitCode, stdout, stderr := run(runtime, []string{"update"}, "")
+	if exitCode != 0 || stdout != "Updated grok-search from 1.0.0 to 1.1.0.\n" || stderr != "" || loaded {
+		t.Fatalf("exit=%d stdout=%q stderr=%q loaded=%t", exitCode, stdout, stderr, loaded)
+	}
+}
+
+func TestUpdateCommandFailureIsHumanReadableAndDoesNotLoadCredentials(t *testing.T) {
+	loaded := false
+	runtime := testRuntime(func(string, time.Time) (auth.Credential, *search.Error) {
+		loaded = true
+		return auth.Credential{}, nil
+	})
+	runtime.Version = "dev"
+	runtime.Update = func(context.Context, string) (updatecli.Result, error) {
+		return updatecli.Result{}, errors.New("self-update is unavailable for this development build")
+	}
+	exitCode, stdout, stderr := run(runtime, []string{"update"}, "")
+	if exitCode != 4 || stdout != "" || stderr != "update failed: self-update is unavailable for this development build\n" || loaded {
+		t.Fatalf("exit=%d stdout=%q stderr=%q loaded=%t", exitCode, stdout, stderr, loaded)
+	}
+	exitCode, stdout, stderr = run(runtime, []string{"update", "extra"}, "")
+	if exitCode != 2 || stdout != "" || stderr != "" || loaded {
+		t.Fatalf("usage exit=%d stdout=%q stderr=%q loaded=%t", exitCode, stdout, stderr, loaded)
 	}
 }
 
