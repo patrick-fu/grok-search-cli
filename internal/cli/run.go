@@ -31,7 +31,7 @@ const (
 )
 
 const (
-	defaultModel  = "grok-4.5"
+	defaultModel  = "grok-4.6"
 	maxModelBytes = 256
 )
 
@@ -631,4 +631,6 @@ Usage:
   grok-search help
   grok-search version
   grok-search update
+
+Default model: grok-4.6
 `

@@ -129,7 +129,7 @@ invocation performs exactly one search and emits exactly one JSON object.
 
 ### --model
 
-`--model <id>` overrides the default `grok-4.5`. The model ID is treated as
+`--model <id>` overrides the default `grok-4.6`. The model ID is treated as
 opaque: valid UTF-8, 1–256 bytes, no control or whitespace characters. It is
 sent once and never silently swapped; the CLI never falls back to another model.
 The returned `model` is always the requested ID. An explicit empty value is
@@ -162,7 +162,7 @@ Search commands write exactly one compact JSON object followed by a newline to
   "schema_version": 1,
   "type": "web",
   "query": "Find the official xAI documentation.",
-  "model": "grok-4.5",
+  "model": "grok-4.6",
   "provider_model": "grok-4.5-build",
   "answer": "The documentation is available at the cited URL.",
   "sources": [

@@ -341,8 +341,8 @@ func TestSearch_DefaultModel(t *testing.T) {
 	}
 	var body requestBody
 	json.Unmarshal(rt.body, &body)
-	if body.Model != "grok-4.5" {
-		t.Errorf("model = %s, want default grok-4.5", body.Model)
+	if body.Model != "grok-4.6" {
+		t.Errorf("model = %s, want default grok-4.6", body.Model)
 	}
 }
 

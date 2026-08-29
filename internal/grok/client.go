@@ -23,7 +23,7 @@ import (
 const (
 	endpointURL       = "https://cli-chat-proxy.grok.com/v1/responses"
 	modelsEndpointURL = "https://cli-chat-proxy.grok.com/v1/models"
-	defaultModel      = "grok-4.5"
+	defaultModel      = "grok-4.6"
 	toolVersion       = "0.2.117"
 	retryDelay        = 250 * time.Millisecond
 	connectLimit      = 10 * time.Second
