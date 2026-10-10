@@ -40,7 +40,7 @@ func (rt *discoveryTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	case endpointURL:
 		wantVersion := rt.versionHeader
 		if wantVersion == "" {
-			wantVersion = "9.8.7+grok-search-cli.dev"
+			wantVersion = "9.8.7"
 		}
 		if req.Header.Get("X-Grok-Client-Version") != wantVersion {
 			status = http.StatusUpgradeRequired
@@ -123,8 +123,8 @@ func TestDiscoveryFailsWithoutGuessingOrStartingInference(t *testing.T) {
 	}
 }
 
-func TestDiscoveryPreservesProviderBuildMetadataInVersionHeader(t *testing.T) {
-	rt := &discoveryTransport{t: t, version: "9.8.7+provider", versionHeader: "9.8.7+provider.grok-search-cli.dev"}
+func TestDiscoveryUsesVersionPointerVerbatimWithBuildMetadata(t *testing.T) {
+	rt := &discoveryTransport{t: t, version: "9.8.7+provider", versionHeader: "9.8.7+provider"}
 	_, err := NewClient("test-input", "dev", rt).Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q", Model: "explicit-model"})
 	if err != nil {
 		t.Fatal(err)

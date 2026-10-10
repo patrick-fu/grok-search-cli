@@ -76,8 +76,8 @@ to run `grok login`. An **agent must request explicit permission before running
 
 Before each search, the CLI reads the public Grok Build stable-version pointer
 at `https://x.ai/cli/stable`. It uses that value in the compatibility header,
-while retaining its own `grok-search-cli` identifier and version. It does not
-check the installed Grok Build version, run Grok Build, or impose a local
+while retaining its own `grok-search-cli` identifier and User-Agent version.
+It does not check the installed Grok Build version, run Grok Build, or impose a local
 minimum version. A provider `426` remains `client_incompatible`.
 
 Metadata reads are bounded by the search's total timeout and take at most 15
@@ -85,6 +85,19 @@ seconds each. No credential is sent to the public version endpoint. A failed
 metadata lookup stops the request; it never triggers a pinned-version or
 pinned-model fallback. Explicit `--model` skips model discovery, but still
 needs the compatibility-version lookup.
+
+Responses requests use the Grok Build token-auth headers, one user message,
+and fresh session/conversation and request UUIDs. The conversation group is
+derived from that session. These IDs remain unchanged for a permitted retry
+and are never reused for a later search. An existing `$GROK_HOME/agent_id`
+(default `~/.grok/agent_id`) is read without modification when it contains a
+usable UUID; a missing or invalid cache simply omits that optional header.
+The CLI never executes Grok Build or creates its machine identity cache.
+
+The search profile keeps one required search tool and bounded output. It does
+not send the coding agent's filesystem tools, telemetry uploads, compaction
+state, or encrypted continuation state. Its client identifier and User-Agent
+identify `grok-search-cli`.
 
 ## Usage
 

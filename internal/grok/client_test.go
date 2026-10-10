@@ -105,7 +105,9 @@ func TestSearch_ExactRequestForX(t *testing.T) {
 		"Content-Type":             "application/json",
 		"X-Grok-Client-Mode":       "headless",
 		"X-Grok-Client-Identifier": "grok-search-cli",
-		"X-Grok-Client-Version":    "9.8.7+grok-search-cli.0.1.0",
+		"X-Grok-Client-Version":    "9.8.7",
+		"X-Xai-Token-Auth":         "xai-grok-cli",
+		"X-Authenticateresponse":   "authenticate-response",
 		"User-Agent":               "grok-search-cli/0.1.0",
 	}
 	h := rt.req.Header
@@ -118,7 +120,7 @@ func TestSearch_ExactRequestForX(t *testing.T) {
 	allowedTransport := map[string]bool{"Host": true, "Content-Length": true}
 	for k := range h {
 		if _, ok := expectHeaders[k]; !ok {
-			if allowedTransport[k] {
+			if allowedTransport[k] || inferenceIdentityHeader(k) {
 				continue
 			}
 			t.Errorf("unexpected header: %s = %q", k, h.Get(k))
@@ -133,8 +135,8 @@ func TestSearch_ExactRequestForX(t *testing.T) {
 	if body.Model != "grok-4.5" {
 		t.Errorf("model = %s, want grok-4.5", body.Model)
 	}
-	if body.Input != "hello world" {
-		t.Errorf("input = %s, want hello world", body.Input)
+	if len(body.Input) != 1 || body.Input[0].Type != "message" || body.Input[0].Role != "user" || body.Input[0].Content != "hello world" {
+		t.Errorf("input = %#v, want one preserved user message", body.Input)
 	}
 	if body.ToolChoice != "required" {
 		t.Errorf("tool_choice = %s, want required", body.ToolChoice)
@@ -179,14 +181,16 @@ func TestSearch_ExactRequestForWeb(t *testing.T) {
 		t.Fatalf("url = %s, want %s", rt.req.URL, endpointURL)
 	}
 
-	// Verify exact 7 application headers (canonical form)
+	// Verify the common application headers (canonical form).
 	expectHeaders := map[string]string{
 		"Authorization":            "Bearer mytoken",
 		"Accept":                   "text/event-stream",
 		"Content-Type":             "application/json",
 		"X-Grok-Client-Mode":       "headless",
 		"X-Grok-Client-Identifier": "grok-search-cli",
-		"X-Grok-Client-Version":    "9.8.7+grok-search-cli.0.1.0",
+		"X-Grok-Client-Version":    "9.8.7",
+		"X-Xai-Token-Auth":         "xai-grok-cli",
+		"X-Authenticateresponse":   "authenticate-response",
 		"User-Agent":               "grok-search-cli/0.1.0",
 	}
 	h := rt.req.Header
@@ -201,7 +205,7 @@ func TestSearch_ExactRequestForWeb(t *testing.T) {
 	allowedTransport := map[string]bool{"Host": true, "Content-Length": true}
 	for k := range h {
 		if _, ok := expectHeaders[k]; !ok {
-			if allowedTransport[k] {
+			if allowedTransport[k] || inferenceIdentityHeader(k) {
 				continue
 			}
 			t.Errorf("unexpected header: %s = %q", k, h.Get(k))
@@ -216,8 +220,8 @@ func TestSearch_ExactRequestForWeb(t *testing.T) {
 	if body.Model != "grok-4.5" {
 		t.Errorf("model = %s, want grok-4.5", body.Model)
 	}
-	if body.Input != "hello world" {
-		t.Errorf("input = %s, want hello world", body.Input)
+	if len(body.Input) != 1 || body.Input[0].Type != "message" || body.Input[0].Role != "user" || body.Input[0].Content != "hello world" {
+		t.Errorf("input = %#v, want one preserved user message", body.Input)
 	}
 	if body.ToolChoice != "required" {
 		t.Errorf("tool_choice = %s, want required", body.ToolChoice)
@@ -463,7 +467,8 @@ func assertCatalogHeaders(t *testing.T, headers http.Header) {
 		"Accept":                   "application/json",
 		"X-Grok-Client-Mode":       "headless",
 		"X-Grok-Client-Identifier": "grok-search-cli",
-		"X-Grok-Client-Version":    "9.8.7+grok-search-cli.1.0",
+		"X-Grok-Client-Version":    "9.8.7",
+		"X-Xai-Token-Auth":         "xai-grok-cli",
 		"User-Agent":               "grok-search-cli/1.0",
 	}
 	for name, value := range want {
@@ -747,6 +752,14 @@ func (reader *prefixErrorReadCloser) Close() error { return nil }
 // own transport tests that observe every request.
 func testClient(token, version string, rt http.RoundTripper) Client {
 	return NewClient(token, version, &inferenceTestTransport{inner: rt})
+}
+
+func inferenceIdentityHeader(name string) bool {
+	switch name {
+	case "X-Grok-Conv-Id", "X-Grok-Session-Id", "X-Grok-Req-Id", "X-Grok-Conv-Group-Id", "X-Grok-Agent-Id", "X-Grok-Model-Override", "X-Grok-Turn-Idx":
+		return true
+	}
+	return false
 }
 
 type inferenceTestTransport struct {

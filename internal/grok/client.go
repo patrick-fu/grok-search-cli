@@ -38,6 +38,7 @@ type client struct {
 	cliVersion      string
 	providerVersion string
 	catalog         *modelCatalog
+	requestHeaders  map[string]string
 	httpClient      *http.Client
 	waitRetry       func(context.Context, time.Duration) bool
 }
@@ -90,6 +91,7 @@ func (c *client) Search(ctx context.Context, request search.Request) (search.Res
 		}
 	}
 
+	c.requestHeaders = requestHeaders(request.Model)
 	body, err := c.buildBody(request)
 	if err != nil {
 		return search.Response{}, search.NewError(search.ErrorInternal)
@@ -316,14 +318,20 @@ func safeRequestID(value string) string {
 }
 
 type requestBody struct {
-	Model           string        `json:"model"`
-	Input           string        `json:"input"`
-	Tools           []searchTool  `json:"tools"`
-	ToolChoice      string        `json:"tool_choice"`
-	Stream          bool          `json:"stream"`
-	Store           bool          `json:"store"`
-	MaxOutputTokens int           `json:"max_output_tokens"`
-	Reasoning       reasoningSpec `json:"reasoning"`
+	Model           string         `json:"model"`
+	Input           []inputMessage `json:"input"`
+	Tools           []searchTool   `json:"tools"`
+	ToolChoice      string         `json:"tool_choice"`
+	Stream          bool           `json:"stream"`
+	Store           bool           `json:"store"`
+	MaxOutputTokens int            `json:"max_output_tokens"`
+	Reasoning       reasoningSpec  `json:"reasoning"`
+}
+
+type inputMessage struct {
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type searchTool struct {
@@ -341,7 +349,8 @@ type webSearchFilters struct {
 }
 
 type reasoningSpec struct {
-	Effort string `json:"effort"`
+	Effort  string `json:"effort"`
+	Summary string `json:"summary"`
 }
 
 type modelCatalog struct {
@@ -378,13 +387,13 @@ func (c *client) buildBody(request search.Request) ([]byte, error) {
 	}
 	return json.Marshal(requestBody{
 		Model:           request.Model,
-		Input:           request.Query,
+		Input:           []inputMessage{{Type: "message", Role: "user", Content: request.Query}},
 		Tools:           []searchTool{tool},
 		ToolChoice:      "required",
 		Stream:          true,
 		Store:           false,
 		MaxOutputTokens: maxOutputTokens,
-		Reasoning:       reasoningSpec{Effort: "low"},
+		Reasoning:       reasoningSpec{Effort: "low", Summary: "concise"},
 	})
 }
 
@@ -399,6 +408,10 @@ func toolTypeFor(t search.Type) string {
 
 func (c *client) setHeaders(req *http.Request) {
 	c.setClientIdentityHeaders(req)
+	req.Header.Set("x-authenticateresponse", "authenticate-response")
+	for name, value := range c.requestHeaders {
+		req.Header.Set(name, value)
+	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Content-Type", "application/json")
 }
@@ -409,16 +422,12 @@ func (c *client) setCatalogHeaders(req *http.Request) {
 }
 
 func (c *client) setClientIdentityHeaders(req *http.Request) {
-	separator := "+"
-	if strings.Contains(c.providerVersion, "+") {
-		separator = "."
-	}
-	version := fmt.Sprintf("%s%sgrok-search-cli.%s", c.providerVersion, separator, c.cliVersion)
 	ua := fmt.Sprintf("grok-search-cli/%s", c.cliVersion)
 
 	req.Header.Set("Authorization", "Bearer "+c.accessToken)
 	req.Header.Set("x-grok-client-mode", "headless")
 	req.Header.Set("x-grok-client-identifier", "grok-search-cli")
-	req.Header.Set("x-grok-client-version", version)
+	req.Header.Set("x-grok-client-version", c.providerVersion)
+	req.Header.Set("X-XAI-Token-Auth", "xai-grok-cli")
 	req.Header.Set("User-Agent", ua)
 }
