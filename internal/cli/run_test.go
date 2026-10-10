@@ -110,7 +110,7 @@ func TestHelpAndVersionAreHumanReadable(t *testing.T) {
 
 	for _, args := range [][]string{{"help"}, {"--help"}, {"web", "--help"}} {
 		exitCode, stdout, stderr := run(runtime, args, "")
-		if exitCode != 0 || !strings.Contains(stdout, "Usage:") || !strings.Contains(stdout, "Default model: grok-4.6") || stderr != "" {
+		if exitCode != 0 || !strings.Contains(stdout, "Usage:") || !strings.Contains(stdout, "Default model:") || stderr != "" {
 			t.Fatalf("args %v: exit=%d stdout=%q stderr=%q", args, exitCode, stdout, stderr)
 		}
 	}
@@ -266,7 +266,7 @@ func TestCommonScalarFlagsAreForwardedToSearch(t *testing.T) {
 				if gotCredential != credential {
 					t.Fatalf("credential = %#v", gotCredential)
 				}
-				wantRequest := search.Request{Type: search.Type("web"), Query: "query", Model: "grok-4.6", MaxOutputTokens: test.wantMaxTokens}
+				wantRequest := search.Request{Type: search.Type("web"), Query: "query", Model: "", MaxOutputTokens: test.wantMaxTokens}
 				if request != wantRequest {
 					t.Fatalf("request = %#v, want %#v", request, wantRequest)
 				}
@@ -308,7 +308,7 @@ func TestModelOptionIsOpaqueAndValidatedBeforeCredentials(t *testing.T) {
 		args      []string
 		wantModel string
 	}{
-		{name: "default web", args: []string{"web", "query"}, wantModel: "grok-4.6"},
+		{name: "default web", args: []string{"web", "query"}, wantModel: ""},
 		{name: "explicit future x", args: []string{"x", "--model", "future-model:beta.1", "query"}, wantModel: "future-model:beta.1"},
 		{name: "preserves exact spelling", args: []string{"web", "--model=Grok.Future_1", "query"}, wantModel: "Grok.Future_1"},
 	} {
@@ -693,7 +693,7 @@ func TestWebAndXSearchRenderOneNormalizedResponseAndPreserveQuery(t *testing.T) 
 				if gotCredential != credential {
 					t.Fatalf("credential = %#v", gotCredential)
 				}
-				wantRequest := search.Request{Type: search.Type(test.command), Query: test.query, Model: "grok-4.6", MaxOutputTokens: 1024}
+				wantRequest := search.Request{Type: search.Type(test.command), Query: test.query, Model: "", MaxOutputTokens: 1024}
 				if request != wantRequest {
 					t.Fatalf("request = %#v", request)
 				}
@@ -701,7 +701,7 @@ func TestWebAndXSearchRenderOneNormalizedResponseAndPreserveQuery(t *testing.T) 
 					SchemaVersion: search.SchemaVersion,
 					Type:          request.Type,
 					Query:         request.Query,
-					Model:         request.Model,
+					Model:         "resolved-search",
 					ProviderModel: "grok-4.5-build",
 					Answer:        "The docs are available.",
 					Sources:       []search.Source{{URL: "https://docs.example.test/"}},
@@ -710,7 +710,7 @@ func TestWebAndXSearchRenderOneNormalizedResponseAndPreserveQuery(t *testing.T) 
 			}
 
 			exitCode, stdout, stderr := run(runtime, test.args, test.stdin)
-			want := fmt.Sprintf("{\"schema_version\":1,\"type\":%q,\"query\":%q,\"model\":\"grok-4.6\",\"provider_model\":\"grok-4.5-build\",\"answer\":\"The docs are available.\",\"sources\":[{\"url\":\"https://docs.example.test/\"}],\"warnings\":[]}\n", test.command, test.query)
+			want := fmt.Sprintf("{\"schema_version\":1,\"type\":%q,\"query\":%q,\"model\":\"resolved-search\",\"provider_model\":\"grok-4.5-build\",\"answer\":\"The docs are available.\",\"sources\":[{\"url\":\"https://docs.example.test/\"}],\"warnings\":[]}\n", test.command, test.query)
 			if exitCode != 0 || stdout != want || stderr != "" {
 				t.Fatalf("exit=%d stdout=%q stderr=%q, want stdout %q", exitCode, stdout, stderr, want)
 			}

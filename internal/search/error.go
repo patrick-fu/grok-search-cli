@@ -17,6 +17,7 @@ const (
 	ErrorRequestRejected         ErrorCode = "request_rejected"
 	ErrorRequestTooLarge         ErrorCode = "request_too_large"
 	ErrorUnsupportedModel        ErrorCode = "unsupported_model"
+	ErrorSearchModelUnavailable  ErrorCode = "search_model_unavailable"
 	ErrorClientIncompatible      ErrorCode = "client_incompatible"
 	ErrorRequestTimeout          ErrorCode = "request_timeout"
 	ErrorTransport               ErrorCode = "transport_error"
@@ -143,6 +144,7 @@ var errorDefinitions = map[ErrorCode]errorDefinition{
 	ErrorRequestRejected:         {message: "The provider rejected the search request.", exitCode: 4},
 	ErrorRequestTooLarge:         {message: "The search request is too large for the provider.", exitCode: 4},
 	ErrorUnsupportedModel:        {message: "The requested model is not supported by the provider.", exitCode: 4},
+	ErrorSearchModelUnavailable:  {message: "The provider did not list a Responses search model. Specify --model.", exitCode: 4},
 	ErrorClientIncompatible:      {message: "The provider requires a newer version of this CLI. Upgrade grok-search.", exitCode: 4},
 	ErrorRequestTimeout:          {message: "The search request timed out.", retryable: true, exitCode: 4},
 	ErrorTransport:               {message: "The search request could not reach the provider.", retryable: true, exitCode: 4},

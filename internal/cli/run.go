@@ -31,7 +31,6 @@ const (
 )
 
 const (
-	defaultModel  = "grok-4.6"
 	maxModelBytes = 256
 )
 
@@ -62,7 +61,6 @@ type searchOptions struct {
 
 func defaultSearchOptions() searchOptions {
 	return searchOptions{
-		model:           defaultModel,
 		timeout:         defaultTimeout,
 		maxOutputTokens: defaultMaxOutputTokens,
 	}
@@ -632,5 +630,5 @@ Usage:
   grok-search version
   grok-search update
 
-Default model: grok-4.6
+Default model: first Responses search model from the provider catalog
 `

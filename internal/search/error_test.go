@@ -24,6 +24,7 @@ func TestNewErrorContract(t *testing.T) {
 		{ErrorRequestRejected, "The provider rejected the search request.", false, 4},
 		{ErrorRequestTooLarge, "The search request is too large for the provider.", false, 4},
 		{ErrorUnsupportedModel, "The requested model is not supported by the provider.", false, 4},
+		{ErrorSearchModelUnavailable, "The provider did not list a Responses search model. Specify --model.", false, 4},
 		{ErrorClientIncompatible, "The provider requires a newer version of this CLI. Upgrade grok-search.", false, 4},
 		{ErrorRequestTimeout, "The search request timed out.", true, 4},
 		{ErrorTransport, "The search request could not reach the provider.", true, 4},

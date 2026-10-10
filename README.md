@@ -72,6 +72,20 @@ credentials produce typed errors (exit `3`). The error message directs the user
 to run `grok login`. An **agent must request explicit permission before running
 `grok login`** on a user's behalf; the search CLI only tells the user to do so.
 
+## Provider compatibility
+
+Before each search, the CLI reads the public Grok Build stable-version pointer
+at `https://x.ai/cli/stable`. It uses that value in the compatibility header,
+while retaining its own `grok-search-cli` identifier and version. It does not
+check the installed Grok Build version, run Grok Build, or impose a local
+minimum version. A provider `426` remains `client_incompatible`.
+
+Metadata reads are bounded by the search's total timeout and take at most 15
+seconds each. No credential is sent to the public version endpoint. A failed
+metadata lookup stops the request; it never triggers a pinned-version or
+pinned-model fallback. Explicit `--model` skips model discovery, but still
+needs the compatibility-version lookup.
+
 ## Usage
 
 ```text
@@ -129,7 +143,13 @@ invocation performs exactly one search and emits exactly one JSON object.
 
 ### --model
 
-`--model <id>` overrides the default `grok-4.6`. The model ID is treated as
+Without `--model`, the CLI fetches the provider catalog and selects its first
+entry with `api_backend: responses` and `supports_backend_search: true`, in
+provider order. It sends that entry's `model` value, or its `id` when `model` is
+absent. No model name or numeric version is pinned locally. If the catalog
+contains no usable search model, the command returns `search_model_unavailable`.
+
+`--model <id>` skips automatic catalog selection. The model ID is treated as
 opaque: valid UTF-8, 1–256 bytes, no control or whitespace characters. It is
 sent once and never silently swapped; the CLI never falls back to another model.
 The returned `model` is always the requested ID. An explicit empty value is
@@ -162,8 +182,8 @@ Search commands write exactly one compact JSON object followed by a newline to
   "schema_version": 1,
   "type": "web",
   "query": "Find the official xAI documentation.",
-  "model": "grok-4.6",
-  "provider_model": "grok-4.5-build",
+  "model": "grok-4.7",
+  "provider_model": "grok-4.7-build",
   "answer": "The documentation is available at the cited URL.",
   "sources": [
     {"url": "https://docs.x.ai/", "title": "xAI Documentation"}

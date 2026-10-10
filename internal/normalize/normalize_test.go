@@ -2,6 +2,7 @@ package normalize_test
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -166,6 +167,10 @@ data: [DONE]
 			}
 			if len(response.Sources) != 0 {
 				t.Fatalf("sources = %#v, want none", response.Sources)
+			}
+			encoded, err := json.Marshal(response)
+			if err != nil || !strings.Contains(string(encoded), `"sources":[]`) {
+				t.Fatalf("empty sources must remain a JSON array: %s (%v)", encoded, err)
 			}
 			if !sameWarnings(response.Warnings, test.wantWarnings) {
 				t.Fatalf("warnings = %#v, want %#v", response.Warnings, test.wantWarnings)

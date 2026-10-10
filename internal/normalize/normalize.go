@@ -24,7 +24,7 @@ const (
 // Normalize reads one provider SSE response and returns only the stable search
 // domain result. It never includes raw provider events or messages in errors.
 func Normalize(ctx context.Context, request search.Request, body io.Reader) (search.Response, *search.Error) {
-	collector := sourceCollector{indexByURL: make(map[string]int)}
+	collector := sourceCollector{sources: make([]search.Source, 0), indexByURL: make(map[string]int)}
 	state := normalizationState{}
 
 	err := parseSSE(ctx, body, func(data string) error {

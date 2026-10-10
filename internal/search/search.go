@@ -17,6 +17,7 @@ const (
 type Request struct {
 	Type  Type
 	Query string
+	// Empty Model requests provider-catalog selection before inference.
 	Model string
 	// MaxOutputTokens bounds the provider's output size. Zero means the
 	// transport default applies.

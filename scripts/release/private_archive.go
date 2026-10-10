@@ -24,7 +24,6 @@ import (
 const (
 	binaryName   = "grok-search"
 	metadataName = "METADATA.json"
-	compatFloor  = "0.2.117"
 )
 
 type metadata struct {
@@ -43,7 +42,7 @@ type target struct {
 }
 
 type compatibility struct {
-	MinimumGrokCLIVersion string `json:"minimum_grok_cli_version"`
+	GrokCLIVersionSource string `json:"grok_cli_version_source"`
 }
 
 type distribution struct {
@@ -138,7 +137,7 @@ func newMetadata(version, goos, goarch, visibility string, epoch int64) (metadat
 		Name:            binaryName,
 		Version:         version,
 		Target:          target{OS: goos, Arch: goarch},
-		Compatibility:   compatibility{MinimumGrokCLIVersion: compatFloor},
+		Compatibility:   compatibility{GrokCLIVersionSource: "https://x.ai/cli/stable"},
 		Distribution:    dist,
 		SourceDateEpoch: epoch,
 	}, nil

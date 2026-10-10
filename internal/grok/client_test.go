@@ -59,7 +59,7 @@ func validSSEX(answer string) string {
 
 func TestSearch_RejectsUnsupportedTypeWithoutNetwork(t *testing.T) {
 	rt := &fakeRoundTripper{status: 200, header: http.Header{"Content-Type": {"text/event-stream"}}}
-	c := NewClient("tok", "1.0", rt)
+	c := testClient("tok", "1.0", rt)
 	_, err := c.Search(context.Background(), search.Request{Type: search.Type("unknown"), Query: "test"})
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
@@ -78,7 +78,7 @@ func TestSearch_ExactRequestForX(t *testing.T) {
 		header: http.Header{"Content-Type": {"text/event-stream"}},
 		text:   validSSEX("answer"),
 	}
-	c := NewClient("mytoken", "0.1.0", rt)
+	c := testClient("mytoken", "0.1.0", rt)
 	resp, err := c.Search(context.Background(), search.Request{Type: search.TypeX, Query: "hello world", Model: "grok-4.5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -105,7 +105,7 @@ func TestSearch_ExactRequestForX(t *testing.T) {
 		"Content-Type":             "application/json",
 		"X-Grok-Client-Mode":       "headless",
 		"X-Grok-Client-Identifier": "grok-search-cli",
-		"X-Grok-Client-Version":    "0.2.117+grok-search-cli.0.1.0",
+		"X-Grok-Client-Version":    "9.8.7+grok-search-cli.0.1.0",
 		"User-Agent":               "grok-search-cli/0.1.0",
 	}
 	h := rt.req.Header
@@ -162,7 +162,7 @@ func TestSearch_ExactRequestForWeb(t *testing.T) {
 		header: http.Header{"Content-Type": {"text/event-stream"}},
 		text:   validSSE("answer"),
 	}
-	c := NewClient("mytoken", "0.1.0", rt)
+	c := testClient("mytoken", "0.1.0", rt)
 	resp, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "hello world", Model: "grok-4.5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -186,7 +186,7 @@ func TestSearch_ExactRequestForWeb(t *testing.T) {
 		"Content-Type":             "application/json",
 		"X-Grok-Client-Mode":       "headless",
 		"X-Grok-Client-Identifier": "grok-search-cli",
-		"X-Grok-Client-Version":    "0.2.117+grok-search-cli.0.1.0",
+		"X-Grok-Client-Version":    "9.8.7+grok-search-cli.0.1.0",
 		"User-Agent":               "grok-search-cli/0.1.0",
 	}
 	h := rt.req.Header
@@ -290,7 +290,7 @@ func TestSearch_FilterToolShapesAndOmission(t *testing.T) {
 				text = validSSEX("ok")
 			}
 			rt := &fakeRoundTripper{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, text: text}
-			_, err := NewClient("tok", "1.0", rt).Search(context.Background(), test.request)
+			_, err := testClient("tok", "1.0", rt).Search(context.Background(), test.request)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -311,7 +311,7 @@ func TestSearch_FilterRejectedWithoutFallbackOrRetry(t *testing.T) {
 		{status: http.StatusBadRequest, header: http.Header{}},
 		{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, text: validSSE("must not run")},
 	}}
-	c := NewClient("tok", "1.0", rt).(*client)
+	c := testClient("tok", "1.0", rt).(*client)
 	c.waitRetry = func(context.Context, time.Duration) bool {
 		t.Fatal("provider rejection must not retry")
 		return false
@@ -328,31 +328,13 @@ func TestSearch_FilterRejectedWithoutFallbackOrRetry(t *testing.T) {
 	}
 }
 
-func TestSearch_DefaultModel(t *testing.T) {
-	rt := &fakeRoundTripper{
-		status: 200,
-		header: http.Header{"Content-Type": {"text/event-stream"}},
-		text:   validSSE("ok"),
-	}
-	c := NewClient("tok", "1.0", rt)
-	_, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var body requestBody
-	json.Unmarshal(rt.body, &body)
-	if body.Model != "grok-4.6" {
-		t.Errorf("model = %s, want default grok-4.6", body.Model)
-	}
-}
-
 func TestSearch_AcceptsAnySuccessfulSSEStatus(t *testing.T) {
 	rt := &fakeRoundTripper{
 		status: http.StatusCreated,
 		header: http.Header{"Content-Type": {"text/event-stream"}},
 		text:   validSSE("ok"),
 	}
-	c := NewClient("tok", "1.0", rt)
+	c := testClient("tok", "1.0", rt)
 	response, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
 	if err != nil || response.Answer != "ok" {
 		t.Fatalf("Search() response=%#v error=%v", response, err)
@@ -361,7 +343,7 @@ func TestSearch_AcceptsAnySuccessfulSSEStatus(t *testing.T) {
 
 func TestSearch_Non200MapsProviderUnavailable(t *testing.T) {
 	rt := &fakeRoundTripper{status: 500}
-	c := NewClient("tok", "1.0", rt)
+	c := testClient("tok", "1.0", rt)
 	_, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
 	if err == nil {
 		t.Fatal("expected error for 500")
@@ -436,7 +418,7 @@ func TestSearch_404CatalogDiagnosesOnlyExplicitModelOmission(t *testing.T) {
 				{status: http.StatusNotFound, header: http.Header{"X-Request-Id": {"safe-404"}}},
 				{status: test.catalogStatus, header: http.Header{"Content-Type": {"application/json"}}, text: test.catalogBody},
 			}}
-			_, err := NewClient("tok", "1.0", rt).Search(context.Background(), search.Request{
+			_, err := testClient("tok", "1.0", rt).Search(context.Background(), search.Request{
 				Type: test.requestType, Query: "q", Model: "future-model",
 			})
 			if err == nil || err.Code != test.wantCode {
@@ -466,7 +448,7 @@ func TestSearch_NeverPreflightsCatalog(t *testing.T) {
 			rt := &scriptedRoundTripper{results: []roundTripResult{{
 				status: status, header: http.Header{"Content-Type": {"text/event-stream"}}, text: validSSE("ok"),
 			}}}
-			_, _ = NewClient("tok", "1.0", rt).Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q", Model: "future-model"})
+			_, _ = testClient("tok", "1.0", rt).Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q", Model: "future-model"})
 			if len(rt.methods) != 1 || rt.urls[0] != endpointURL {
 				t.Fatalf("unexpected catalog request: methods=%v routes=%v", rt.methods, rt.urls)
 			}
@@ -481,7 +463,7 @@ func assertCatalogHeaders(t *testing.T, headers http.Header) {
 		"Accept":                   "application/json",
 		"X-Grok-Client-Mode":       "headless",
 		"X-Grok-Client-Identifier": "grok-search-cli",
-		"X-Grok-Client-Version":    "0.2.117+grok-search-cli.1.0",
+		"X-Grok-Client-Version":    "9.8.7+grok-search-cli.1.0",
 		"User-Agent":               "grok-search-cli/1.0",
 	}
 	for name, value := range want {
@@ -503,7 +485,7 @@ func TestSearch_WrongContentTypeReturnsInvalidProviderResponse(t *testing.T) {
 		},
 		text: "{}",
 	}
-	c := NewClient("tok", "1.0", rt)
+	c := testClient("tok", "1.0", rt)
 	_, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
 	if err == nil {
 		t.Fatal("expected error for wrong content-type")
@@ -518,7 +500,7 @@ func TestSearch_WrongContentTypeReturnsInvalidProviderResponse(t *testing.T) {
 
 func TestSearch_TransportErrorReturnsTransportError(t *testing.T) {
 	rt := &errRoundTripper{}
-	c := NewClient("tok", "1.0", rt).(*client)
+	c := testClient("tok", "1.0", rt).(*client)
 	c.waitRetry = func(context.Context, time.Duration) bool { return true }
 	_, err := c.Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
 	if err == nil {
@@ -535,7 +517,7 @@ func TestSearch_UsesRequestedMaxOutputTokens(t *testing.T) {
 		header: http.Header{"Content-Type": {"text/event-stream"}},
 		text:   validSSE("ok"),
 	}
-	_, err := NewClient("tok", "1.0", rt).Search(context.Background(), search.Request{
+	_, err := testClient("tok", "1.0", rt).Search(context.Background(), search.Request{
 		Type: search.TypeWeb, Query: "q", MaxOutputTokens: 256,
 	})
 	if err != nil {
@@ -555,7 +537,7 @@ func TestSearch_RetriesOnePreResponseTransportFailureWithExactRequest(t *testing
 		{err: errors.New("connection refused")},
 		{status: http.StatusOK, header: http.Header{"Content-Type": {"text/event-stream"}}, text: validSSEX("ok")},
 	}}
-	c := NewClient("tok", "1.0", rt).(*client)
+	c := testClient("tok", "1.0", rt).(*client)
 	var waited time.Duration
 	c.waitRetry = func(_ context.Context, delay time.Duration) bool {
 		waited = delay
@@ -625,7 +607,7 @@ func TestSearch_NeverRetriesStatusCancellationOrPartialStream(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			rt := &scriptedRoundTripper{results: test.results}
-			c := NewClient("tok", "1.0", rt).(*client)
+			c := testClient("tok", "1.0", rt).(*client)
 			c.waitRetry = func(context.Context, time.Duration) bool {
 				t.Fatal("unexpected retry")
 				return false
@@ -668,7 +650,7 @@ func TestSearch_HTTPStatusMappingAndMetadata(t *testing.T) {
 				header.Set("Retry-After", "4001")
 			}
 			rt := &fakeRoundTripper{status: tc.status, header: header, text: body}
-			_, err := NewClient("tok", "1.0", rt).Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
+			_, err := testClient("tok", "1.0", rt).Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
 			if err == nil || err.Code != tc.code {
 				t.Fatalf("error = %#v, want %s", err, tc.code)
 			}
@@ -696,7 +678,7 @@ func TestSearch_RequestIDAndRetryAfterSanitized(t *testing.T) {
 		rt := &fakeRoundTripper{status: http.StatusTooManyRequests, header: http.Header{
 			"X-Request-ID": {id}, "Retry-After": {"not-an-integer"},
 		}}
-		_, err := NewClient("tok", "1.0", rt).Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
+		_, err := testClient("tok", "1.0", rt).Search(context.Background(), search.Request{Type: search.TypeWeb, Query: "q"})
 		if err == nil || err.RequestID != "" || err.RetryAfterSeconds != nil {
 			t.Fatalf("unsafe metadata retained: %#v", err)
 		}
@@ -760,3 +742,29 @@ func (reader *prefixErrorReadCloser) Read(buffer []byte) (int, error) {
 }
 
 func (reader *prefixErrorReadCloser) Close() error { return nil }
+
+// These tests exercise inference and its diagnostic catalog; discovery has its
+// own transport tests that observe every request.
+func testClient(token, version string, rt http.RoundTripper) Client {
+	return NewClient(token, version, &inferenceTestTransport{inner: rt})
+}
+
+type inferenceTestTransport struct {
+	inner            http.RoundTripper
+	inferenceStarted bool
+}
+
+func (rt *inferenceTestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	body := ""
+	if req.URL.String() == stableVersionURL {
+		body = "9.8.7"
+	} else if req.URL.String() == modelsEndpointURL && !rt.inferenceStarted {
+		body = `{"data":[{"id":"test-search","api_backend":"responses","supports_backend_search":true}]}`
+	} else {
+		if req.URL.String() == endpointURL {
+			rt.inferenceStarted = true
+		}
+		return rt.inner.RoundTrip(req)
+	}
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}, nil
+}

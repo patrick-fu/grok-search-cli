@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -23,8 +22,6 @@ import (
 const (
 	endpointURL       = "https://cli-chat-proxy.grok.com/v1/responses"
 	modelsEndpointURL = "https://cli-chat-proxy.grok.com/v1/models"
-	defaultModel      = "grok-4.6"
-	toolVersion       = "0.2.117"
 	retryDelay        = 250 * time.Millisecond
 	connectLimit      = 10 * time.Second
 	catalogLimit      = 1 << 20
@@ -37,10 +34,12 @@ type Client interface {
 }
 
 type client struct {
-	accessToken string
-	cliVersion  string
-	httpClient  *http.Client
-	waitRetry   func(context.Context, time.Duration) bool
+	accessToken     string
+	cliVersion      string
+	providerVersion string
+	catalog         *modelCatalog
+	httpClient      *http.Client
+	waitRetry       func(context.Context, time.Duration) bool
 }
 
 // NewClient creates a Client with the given credentials. When rt is non-nil
@@ -71,6 +70,25 @@ func (c *client) Search(ctx context.Context, request search.Request) (search.Res
 	if request.Type != search.TypeWeb && request.Type != search.TypeX {
 		return search.Response{}, search.NewError(search.ErrorInternal)
 	}
+	// Keep discovery scoped to this search, including when a client is reused.
+	call := *c
+	c = &call
+	version, discoveryErr := c.discoverVersion(ctx)
+	if discoveryErr != nil {
+		return search.Response{}, discoveryErr
+	}
+	c.providerVersion = version
+	if request.Model == "" {
+		catalog, catalogErr := c.loadCatalog(ctx)
+		if catalogErr != nil {
+			return search.Response{}, catalogErr
+		}
+		c.catalog = catalog
+		request.Model = catalog.searchModel()
+		if request.Model == "" {
+			return search.Response{}, search.NewError(search.ErrorSearchModelUnavailable)
+		}
+	}
 
 	body, err := c.buildBody(request)
 	if err != nil {
@@ -84,7 +102,7 @@ func (c *client) Search(ctx context.Context, request search.Request) (search.Res
 	defer resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		if resp.StatusCode == http.StatusNotFound && c.catalogOmitsModel(ctx, modelFor(request)) {
+		if resp.StatusCode == http.StatusNotFound && c.catalogOmitsModel(ctx, request.Model) {
 			return search.Response{}, classifyHTTPError(resp, search.ErrorUnsupportedModel)
 		}
 		return search.Response{}, classifyHTTPError(resp)
@@ -109,45 +127,25 @@ func (c *client) Search(ctx context.Context, request search.Request) (search.Res
 	return response, normalizedErr
 }
 
-// catalogOmitsModel performs the sole model-catalog lookup. It is deliberately
-// reachable only after the fixed Responses route returned 404: the catalog is
-// diagnostic evidence, never model selection or a request preflight.
+// catalogOmitsModel reuses automatic selection's catalog, or looks up an
+// explicit model only after a 404. Neither path retries inference.
 func (c *client) catalogOmitsModel(ctx context.Context, requestedModel string) bool {
-	catalogCtx, cancel := context.WithTimeout(ctx, catalogTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(catalogCtx, http.MethodGet, modelsEndpointURL, nil)
-	if err != nil {
-		return false
-	}
-	c.setCatalogHeaders(req)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil || resp == nil {
-		if resp != nil && resp.Body != nil {
-			resp.Body.Close()
+	catalog := c.catalog
+	if catalog == nil {
+		var catalogErr *search.Error
+		catalog, catalogErr = c.loadCatalog(ctx)
+		if catalogErr != nil {
+			return false
 		}
-		return false
 	}
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices || resp.Body == nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, catalogLimit+1))
-	if err != nil || len(body) > catalogLimit {
-		return false
-	}
-
-	var catalog modelCatalog
-	if err := json.Unmarshal(body, &catalog); err != nil || len(catalog.Data) == 0 {
+	if len(catalog.Data) == 0 {
 		return false
 	}
 	for _, model := range catalog.Data {
-		if model.ID == nil || *model.ID == "" {
+		if (model.ID == nil || *model.ID == "") && model.Model == "" {
 			return false
 		}
-		if *model.ID == requestedModel {
+		if model.Model == requestedModel || model.ID != nil && *model.ID == requestedModel {
 			return false
 		}
 	}
@@ -351,7 +349,10 @@ type modelCatalog struct {
 }
 
 type catalogModel struct {
-	ID *string `json:"id"`
+	ID                    *string `json:"id"`
+	Model                 string  `json:"model"`
+	APIBackend            string  `json:"api_backend"`
+	SupportsBackendSearch bool    `json:"supports_backend_search"`
 }
 
 func (c *client) buildBody(request search.Request) ([]byte, error) {
@@ -376,7 +377,7 @@ func (c *client) buildBody(request search.Request) ([]byte, error) {
 		tool.ToDate = request.XFilters.ToDate
 	}
 	return json.Marshal(requestBody{
-		Model:           modelFor(request),
+		Model:           request.Model,
 		Input:           request.Query,
 		Tools:           []searchTool{tool},
 		ToolChoice:      "required",
@@ -385,13 +386,6 @@ func (c *client) buildBody(request search.Request) ([]byte, error) {
 		MaxOutputTokens: maxOutputTokens,
 		Reasoning:       reasoningSpec{Effort: "low"},
 	})
-}
-
-func modelFor(request search.Request) string {
-	if request.Model == "" {
-		return defaultModel
-	}
-	return request.Model
 }
 
 // toolTypeFor maps a request search surface to the single provider tool. Each
@@ -415,7 +409,11 @@ func (c *client) setCatalogHeaders(req *http.Request) {
 }
 
 func (c *client) setClientIdentityHeaders(req *http.Request) {
-	version := fmt.Sprintf("%s+grok-search-cli.%s", toolVersion, c.cliVersion)
+	separator := "+"
+	if strings.Contains(c.providerVersion, "+") {
+		separator = "."
+	}
+	version := fmt.Sprintf("%s%sgrok-search-cli.%s", c.providerVersion, separator, c.cliVersion)
 	ua := fmt.Sprintf("grok-search-cli/%s", c.cliVersion)
 
 	req.Header.Set("Authorization", "Bearer "+c.accessToken)

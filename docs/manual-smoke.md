@@ -15,8 +15,8 @@ VERSION=0.1.0-private.1 SOURCE_DATE_EPOCH=1700000000 scripts/build-private-artif
 
 Choose the matching archive under `dist/private/`, verify its sidecar checksum,
 and extract it. V1 supports macOS and Linux on amd64 and arm64. `METADATA.json`
-inside each archive records the target, version, and compatibility floor
-`0.2.117`.
+inside each archive records the target, version, and compatibility-version
+source `https://x.ai/cli/stable`.
 
 ```sh
 shasum -a 256 -c dist/private/grok-search_0.1.0-private.1_darwin_arm64.tar.gz.sha256

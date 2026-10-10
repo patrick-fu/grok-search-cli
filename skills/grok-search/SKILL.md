@@ -42,7 +42,8 @@ or X URL the user already has, reach a URL reader instead.
    `--allow-handle` / `--exclude-handle` (mutually exclusive) and
    `--from` / `--to YYYY-MM-DD` where `from` is not later than `to`. An explicit
    `--model` always wins and is sent once, never silently swapped; without it,
-   the CLI uses `grok-4.6`. For other shared controls, check `grok-search help`.
+   the CLI selects a search-capable model from the current provider catalog.
+   For other shared controls, check `grok-search help`.
 
    Done when one command is issued with the query on stdin (or one clean
    positional) and only the filters the request needs.
